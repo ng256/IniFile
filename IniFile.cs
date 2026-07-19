@@ -220,6 +220,7 @@ namespace System.Ini
             {
                 _content = value ?? (_content = string.Empty);
                 _matches.Clear();
+                if(string.IsNullOrEmpty(value)) return;
 
                 // Iterate over matches using the regex pattern and collect sections and entries names.
                 for (Match match = _regex.Match(_content); match.Success; match = match.NextMatch())
@@ -243,6 +244,9 @@ namespace System.Ini
             StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
             bool allowEscChars = false)
         {
+            if ((uint)comparison > (uint)StringComparison.OrdinalIgnoreCase)
+                throw new ArgumentOutOfRangeException(nameof(comparison));
+            
             if (content == null) content = string.Empty;
             _comparison = comparison;
             _regex = new Regex(@"(?=\S)(?<text>(?<comment>(?<open>[#;]+)(?:[^\S\r\n]*)(?<value>.+))|" +
@@ -826,26 +830,28 @@ namespace System.Ini
         // Sets or clears the RegexOptions flags based on the specified StringComparison, returning the modified value.
         private static RegexOptions GetRegexOptions(StringComparison comparison, RegexOptions options = RegexOptions.None)
         {
-            switch (comparison)
+            // Bit 0 indicates IgnoreCase.
+            if ((((int)comparison) & 1) != 0)
+                options |= RegexOptions.IgnoreCase;
+            else
+                options &= ~RegexOptions.IgnoreCase;
+        
+            // Higher bits indicate the comparison type.
+            switch (((int)comparison) >> 1)
             {
-                case StringComparison.CurrentCulture:
+                case 0: // CurrentCulture
                     options &= ~RegexOptions.CultureInvariant;
                     break;
-                case StringComparison.CurrentCultureIgnoreCase:
-                    options &= ~RegexOptions.CultureInvariant;
-                    options |= RegexOptions.IgnoreCase;
-                    break;
-                case StringComparison.InvariantCulture:
+        
+                case 1: // InvariantCulture
                     options |= RegexOptions.CultureInvariant;
                     break;
-                case StringComparison.InvariantCultureIgnoreCase:
-                    options |= RegexOptions.IgnoreCase | RegexOptions.CultureInvariant;
-                    break;
-                case StringComparison.OrdinalIgnoreCase:
-                    options |= RegexOptions.IgnoreCase;
+        
+                case 2: // Ordinal
+                    options &= ~RegexOptions.CultureInvariant;
                     break;
             }
-
+        
             return options;
         }
 
@@ -1128,15 +1134,14 @@ namespace System.Ini
         // Converts a string to lowercase based on the specified.
         private static string MayBeToLower(string text, StringComparison comparison)
         {
-            if ((int)comparison % 2 > 0)
+            if ((((int)comparison) & 1) != 0)
                 switch (comparison)
                 {
                     case StringComparison.CurrentCultureIgnoreCase:
                         return text.ToLower(CultureInfo.CurrentCulture);
                     case StringComparison.InvariantCultureIgnoreCase:
-                        return text.ToLower(CultureInfo.InvariantCulture);
                     case StringComparison.OrdinalIgnoreCase:
-                        return text.ToLower();
+                        return text.ToLowerInvariant();
                 }
 
             return text;
