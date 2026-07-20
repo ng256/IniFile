@@ -799,11 +799,9 @@ namespace System.Ini
         }
 
         // Sets multiple values for a specific key in a section.
-
         /*TODO:
           Fix the bug in the SetValues method or create a separate logic for RemoveKeys 
           that will carefully remove all occurrences of a key without affecting the surrounding text (comments, empty lines). 
-          Once this bug is fixed, the test will be completely green.
         */
         private void SetValues(string section, string key, params string[] values)
         {
