@@ -1794,12 +1794,38 @@ namespace System.Ini
         /// <exception cref="ArgumentNullException">Thrown when <paramref name="section"/> is <c>null</c>.</exception>
         public void RemoveSection(string section)
         {
-            if (section == null)
-                throw new ArgumentNullException(nameof(section));
-        
-            // Packed ranges: high 32 bits = start, low 32 bits = end (exclusive).
-            List<long> ranges = new List<long>();
-            int currentStart = -1;
+            // Handle global entries removal.
+            bool emptySection = string.IsNullOrEmpty(section);
+            if (emptySection)
+            {
+                int firstSectionIndex = -1;
+                for (int i = 0; i < _matches.Count; i++)
+                {
+                    if (_matches[i].Groups["section"].Success)
+                    {
+                        firstSectionIndex = _matches[i].Index;
+                        break;
+                    }
+                }
+            
+                if (firstSectionIndex < 0)
+                {
+                    // No sections at all – delete everything.
+                    Content = string.Empty;
+                }
+                else
+                {
+                    // Remove all characters from the beginning up to the first section
+                    StringBuilder sb = new StringBuilder(_content);
+                    sb.Remove(0, firstSectionIndex);
+                    Content = sb.ToString();
+                }
+                return;
+            }
+
+            // For named sections.
+            List<long> ranges = new List<long>(); // Packed ranges.
+            int currentStart = -1; // Tracks the currently matched section.
         
             for (int i = 0; i < _matches.Count; i++)
             {
@@ -1810,7 +1836,9 @@ namespace System.Ini
                     // Close previous range if any.
                     if (currentStart >= 0)
                     {
-                        ranges.Add(((long)currentStart << 32) | (uint)match.Index);
+                        // High 32 bits = start, low 32 bits = end (exclusive).
+                        uint currentEnd = (uint)match.Index;
+                        ranges.Add(((long)currentStart << 32) | currentEnd);
                         currentStart = -1;
                     }
         
