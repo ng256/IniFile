@@ -7,11 +7,17 @@
     THe IniFile is a class that represents a parser of ini files
     using regular expressions.
 
-    The  class implements  methods  for working with  ini files:
+    The class implements methods for working with ini files:
        - parsing INI files;
        - getting sections, keys and values by sections and keys;
-       - setting values;
-       - automatically initializes properties.
+       - setting values (including multiple values for the same 
+         key);
+       - removing keys and whole sections;
+       - automatically initializing properties.
+
+    All modifications preserve  the  original formatting  of the 
+    file,  including whitespace,  comments,  and  line  endings, 
+    by  operating  directly  on  text coordinates.
 
     To  use the class, you  must  pass  it  a  string  or stream
     containing the ini file data and some parsing settings.
@@ -485,6 +491,52 @@ namespace System.Ini
             File.WriteAllText(fullPath, Content, encoding ?? Encoding.UTF8);
         }
 
+        /// <summary>
+        /// Reads a value of type <typeparamref name="T"/> from the specified INI file,
+        /// section, and key. If the file does not exist, returns <paramref name="defaultValue"/>.
+        /// </summary>
+        /// <typeparam name="T">The type of the value to read.</typeparam>
+        /// <param name="fileName">Path to the INI file.</param>
+        /// <param name="section">Section name. Pass <c>null</c> for global entries.</param>
+        /// <param name="key">Key name.</param>
+        /// <param name="defaultValue">Default value returned if the entry is not found.</param>
+        /// <returns>The read value, or <paramref name="defaultValue"/> if not found.</returns>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="key"/> is <c>null</c>.</exception>
+        public static T ReadFromFile<T>(string fileName, string section, string key, T defaultValue = default)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+        
+            if (!File.Exists(fileName))
+                return defaultValue;
+        
+            using (var reader = new StreamReader(fileName, AutoDetectEncoding(fileName, Encoding.UTF8)))
+            {
+                var ini = Load(reader);
+                return ini.Read<T>(section, key, defaultValue);
+            }
+        }
+        
+        /// <summary>
+        /// Writes a value of type <typeparamref name="T"/> to the specified INI file,
+        /// section, and key. If the file does not exist, it is created.
+        /// </summary>
+        /// <typeparam name="T">The type of the value to write.</typeparam>
+        /// <param name="fileName">Path to the INI file.</param>
+        /// <param name="section">Section name. Pass <c>null</c> for global entries.</param>
+        /// <param name="key">Key name.</param>
+        /// <param name="value">The value to write.</param>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="key"/> is <c>null</c>.</exception>
+        public static void WriteToFile<T>(string fileName, string section, string key, T value)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+        
+            var ini = LoadOrCreate(fileName, Encoding.UTF8);
+            ini.Write<T>(section, key, value);
+            ini.Save(fileName, Encoding.UTF8);
+        }
+
         // Method to retrieve all sections in the INI file.
         private IEnumerable<string> GetSections()
         {
@@ -732,6 +784,7 @@ namespace System.Ini
         // Sets multiple values for a specific key in a section.
         private void SetValues(string section, string key, params string[] values)
         {
+            if (values == null) values = new string[0];
             int valueIndex = 0;  // Track the index of the current value being processed.
             bool emptySection = string.IsNullOrEmpty(section);
             bool inSection = emptySection;
@@ -1764,6 +1817,7 @@ namespace System.Ini
         {
             if (key == null)
                 throw new ArgumentNullException(nameof(key));
+            
             SetValue(section, key, null);
         }
         
@@ -1783,6 +1837,7 @@ namespace System.Ini
         {
             if (key == null)
                 throw new ArgumentNullException(nameof(key));
+            
             SetValues(section, key); // empty params array removes all matching  entries.
         }
 
