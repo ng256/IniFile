@@ -735,86 +735,124 @@ namespace System.Ini
             int valueIndex = 0;  // Track the index of the current value being processed.
             bool emptySection = string.IsNullOrEmpty(section);
             bool inSection = emptySection;
-            Match lastMatch = null;  // Keep track of the last regex match found.
+            Match lastMatch = null;      // Keep track of the last entry (any key) in the section.
+            Match lastSection = null;    // Keep track of the last occurrence of the section.
             StringBuilder sb = new StringBuilder(_content);  // Create a StringBuilder to modify the ini content.
             int offset = 0; // Offset to account for changes in length during replacements.
-
-
+        
+            // List to store all matches of the target key within the target section.
+            List<Match> keyMatches = new List<Match>();
+        
             // Iterate over the ini content and process each match for section and entry
-            for (int i = 0; valueIndex < values.Length && i < _matches.Count; i++)
+            for (int i = 0; i < _matches.Count; i++)
             {
                 Match match = _matches[i];
-
+        
                 if (match.Groups["section"].Success)  // Check if the current match is a section.
                 {
                     // Set the inSection flag based on whether the section matches the target section.
-                    inSection = match.Groups["value"].Value.Equals(section, _comparison);
+                    bool sectionMatch = match.Groups["value"].Value.Equals(section, _comparison);
+                    if (sectionMatch)
+                        lastSection = match;  // Remember only the matching section header.
+        
+                    inSection = sectionMatch;
                     if (emptySection) break;  // If there is no section, break out of the loop.
                     continue;
                 }
-
+        
                 // Check if inside the correct section and the current match is an entry.
                 if (inSection && match.Groups["entry"].Success)
                 {
-                    lastMatch = match;
-
+                    lastMatch = match;  // Remember the last entry in the section.
+        
                     // Check if the key matches.
-                    if (!match.Groups["key"].Value.Equals(key, _comparison))
-                        continue;
-
-                    // Get the group representing the value.
-                    Group group = match.Groups["value"];
-
-                    // Get the new value to insert.
-                    string newValue = values[valueIndex++] ?? string.Empty;
-                    string oldValue = group.Value;
-
-                    // Calculate the index considering previous modifications.
-                    int index = group.Index + offset;
-                    int length = group.Length;
-
-                    // Remove the old value and insert the new one.
-                    sb = sb.Remove(index, length);
-                    if (_allowEscapeChars) newValue = ToEscape(newValue);
-                    sb = sb.Insert(index, newValue);
-
-                    // Update the offset for future replacements.
-                    offset += newValue.Length - oldValue.Length;
+                    if (match.Groups["key"].Value.Equals(key, _comparison))
+                    {
+                        keyMatches.Add(match);
+        
+                        // If there are still values left, replace the current entry.
+                        if (valueIndex < values.Length)
+                        {
+                            // Get the group representing the value.
+                            Group group = match.Groups["value"];
+        
+                            // Get the new value to insert.
+                            string newValue = values[valueIndex++] ?? string.Empty;
+                            string oldValue = group.Value;
+        
+                            // Calculate the index considering previous modifications.
+                            int index = group.Index + offset;
+                            int length = group.Length;
+        
+                            // Remove the old value and insert the new one.
+                            sb.Remove(index, length);
+                            if (_allowEscapeChars) newValue = ToEscape(newValue);
+                            sb.Insert(index, newValue);
+        
+                            // Update the offset for future replacements.
+                            offset += newValue.Length - oldValue.Length;
+                        }
+                        // else: this is an extra occurrence of the key that will be removed later.
+                    }
                 }
             }
-
-            // If there are still values left to be processed, append them at the end of the section.
-            if (valueIndex < values.Length)
+        
+            // Determine the number of existing entries for the key.
+            int existingCount = keyMatches.Count;
+        
+            // If there are more existing entries than provided values, remove the excess.
+            if (existingCount > values.Length)
             {
-                int index = 0;
-
-                // If a previous match was found, insert after the last entry.
+                // Remove extra entries from the end to preserve order.
+                for (int j = existingCount - 1; j >= values.Length; j--)
+                {
+                    Match match = keyMatches[j];
+                    int index = match.Index + offset;
+                    int length = match.Length;
+                    sb.Remove(index, length);
+                    offset -= length; // Adjust offset for the removal.
+                }
+            }
+            // If there are fewer existing entries, add the remaining values.
+            else if (existingCount < values.Length)
+            {
+                int insertIndex;
+        
+                // If a last entry was found, insert after it.
                 if (lastMatch != null)
                 {
-                    index = lastMatch.Index + lastMatch.Length;
+                    insertIndex = lastMatch.Index + lastMatch.Length + offset;
                 }
-
-                // If no match was found, append a new section header if necessary.
+                // If no entry but a matching section header exists, insert right after the header.
+                else if (lastSection != null)
+                {
+                    insertIndex = lastSection.Index + lastSection.Length + offset;
+                }
+                // If the section doesn't exist, create a new section header.
                 else if (!emptySection)
                 {
                     sb.Append(_lineBreaker);
                     sb.Append($"[{section}]{_lineBreaker}");
-                    index = sb.Length;
+                    insertIndex = sb.Length;
                 }
-
+                else
+                {
+                    // For global section (empty section name), insert at the end of the file.
+                    insertIndex = sb.Length;
+                }
+        
                 // Insert the remaining values as new entries in the section.
                 while (valueIndex < values.Length)
                 {
-                    // Obtaining the next value.
                     string value = values[valueIndex++];
                     if (_allowEscapeChars) value = ToEscape(value);  // Escape characters if allowed.
-
+        
                     // Insert the new key-value pair into the content.
                     string line = $"{key}={value}";
-                    InsertLine(sb, ref index, _lineBreaker, line);
+                    InsertLine(sb, ref insertIndex, _lineBreaker, line);
                 }
             }
-
+        
             // Update the content with the modified StringBuilder content
             Content = sb.ToString();
         }
@@ -1710,6 +1748,99 @@ namespace System.Ini
             return (T[])ReadArray(section, key, typeof(T), converter);
         }
 
+        /// <summary>
+        /// Removes the first occurrence of the specified key in the given section from the INI file.
+        /// </summary>
+        /// <param name="section">
+        /// Section name. Pass <c>null</c> to remove global entries above all sections.
+        /// </param>
+        /// <param name="key">
+        /// Key name.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="key"/> is <c>null</c>.
+        /// </exception>
+        public void RemoveKey(string section, string key)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+            SetValue(section, key, null);
+        }
+        
+        /// <summary>
+        /// Removes all occurrences of the specified key in the given section from the INI file.
+        /// </summary>
+        /// <param name="section">
+        /// Section name. Pass <c>null</c> to remove global entries above all sections.
+        /// </param>
+        /// <param name="key">
+        /// Key name.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="key"/> is <c>null</c>.
+        /// </exception>
+        public void RemoveKeys(string section, string key)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+            SetValues(section, key); // empty params array removes all matching  entries.
+        }
+
+        /// <summary>
+        /// Removes all sections with the specified name from the INI file.
+        /// Preserves formatting and does not alter whitespace outside removed ranges.
+        /// </summary>
+        /// <param name="section">Section name to remove.</param>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="section"/> is <c>null</c>.</exception>
+        public void RemoveSection(string section)
+        {
+            if (section == null)
+                throw new ArgumentNullException(nameof(section));
+        
+            // Packed ranges: high 32 bits = start, low 32 bits = end (exclusive).
+            List<long> ranges = new List<long>();
+            int currentStart = -1;
+        
+            for (int i = 0; i < _matches.Count; i++)
+            {
+                Match match = _matches[i];
+        
+                if (match.Groups["section"].Success)
+                {
+                    // Close previous range if any.
+                    if (currentStart >= 0)
+                    {
+                        ranges.Add(((long)currentStart << 32) | (uint)match.Index);
+                        currentStart = -1;
+                    }
+        
+                    // Start new range if section matches.
+                    if (match.Groups["value"].Value.Equals(section, _comparison))
+                        currentStart = match.Index;
+                }
+                // Entries are ignored – they're inside section ranges.
+            }
+        
+            // Close last range if it extends to the end.
+            if (currentStart >= 0)
+                ranges.Add(((long)currentStart << 32) | (uint)_content.Length);
+        
+            if (ranges.Count == 0)
+                return;
+        
+            StringBuilder sb = new StringBuilder(_content);
+            // Remove from the end to preserve indices of remaining ranges.
+            for (int i = ranges.Count - 1; i >= 0; i--)
+            {
+                // Unpack start and end.
+                long packed = ranges[i];
+                int start = unchecked((int)(packed >> 32));
+                int end = unchecked((int)packed);
+                sb.Remove(start, end - start);
+            }
+        
+            Content = sb.ToString();
+        }
 
         /// <summary>
         /// Writes a string associated with the specified section and key to the INI file.
