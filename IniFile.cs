@@ -51,7 +51,7 @@
     SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ***************************************************************/
-#nullable disable
+
 using System.Collections.Generic;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -60,9 +60,25 @@ using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Diagnostics;
 
 namespace System.Ini
 {
+    /// <summary>
+    /// Indicates that a property should be ignored by the INI serialization methods.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Property, AllowMultiple = false, Inherited = false)]
+    [Serializable]
+    public sealed class IniIgnoreAttribute : Attribute
+    {
+        /// <summary>
+        /// Initializes a new instance of the <see cref="IniIgnoreAttribute"/> class.
+        /// </summary>
+        public IniIgnoreAttribute()
+        {
+        }
+    }
+
     /// <summary>
     /// Attribute that associates a class or property with a specific section in the INI file.
     /// Used by the <see cref="IniFile.ReadSettings"/> and <see cref="IniFile.WriteSettings"/> methods
@@ -173,6 +189,7 @@ namespace System.Ini
     /// Represents a regular expression-based, collection-free INI file parser that preserves the original file formatting when editing entries.
     /// </summary>
     [Serializable]
+    [DebuggerDisplay("{Content}")]
     public sealed class IniFile
     {
         // Private field for storing the content of the INI file.
@@ -782,6 +799,12 @@ namespace System.Ini
         }
 
         // Sets multiple values for a specific key in a section.
+
+        /*TODO:
+          Fix the bug in the SetValues method or create a separate logic for RemoveKeys 
+          that will carefully remove all occurrences of a key without affecting the surrounding text (comments, empty lines). 
+          Once this bug is fixed, the test will be completely green.
+        */
         private void SetValues(string section, string key, params string[] values)
         {
             if (values == null) values = new string[0];
@@ -968,6 +991,95 @@ namespace System.Ini
             }
         }
 
+        // Converts an enum value to its string representation.
+        // For flags enums, returns a comma-separated list of names.
+        private static string EnumToString(object enumValue)
+        {
+            if (enumValue == null)
+                return null;
+
+            Type enumType = enumValue.GetType();
+            if (!enumType.IsEnum)
+                return enumValue.ToString();
+
+            // Get the underlying integral value.
+            long longValue = Convert.ToInt64(enumValue);
+            bool isFlags = enumType.GetCustomAttribute<FlagsAttribute>() != null;
+
+            if (isFlags)
+            {
+                // For flags, we need to collect all set flag names.
+                List<string> names = new List<string>();
+                Array values = Enum.GetValues(enumType);
+                // Process in descending order to handle combined flags correctly.
+                for (int i = values.Length - 1; i >= 0; i--)
+                {
+                    long flagValue = Convert.ToInt64(values.GetValue(i));
+                    if (flagValue == 0)
+                        continue; // Skip zero.
+
+                    if ((longValue & flagValue) == flagValue)
+                    {
+                        string name = Enum.GetName(enumType, values.GetValue(i));
+                        if (!string.IsNullOrEmpty(name))
+                            names.Add(name);
+                        longValue &= ~flagValue; // Remove the flag to avoid duplicates.
+                    }
+                }
+
+                // If any bits remain (e.g., undefined combination), add them as numbers.
+                if (longValue != 0)
+                    names.Add(longValue.ToString());
+
+                if (names.Count == 0)
+                    return "0";
+
+                return string.Join(", ", names);
+            }
+            else
+            {
+                // Non-flags enum: just get the name.
+                string name = Enum.GetName(enumType, enumValue);
+                return name ?? Convert.ToInt64(enumValue).ToString();
+            }
+        }
+
+        // Parses a string into an enum value of the specified type.
+        // Supports comma-separated flags and ignores case unless specified.
+        private static object ParseEnum(string value, Type enumType, bool ignoreCase = true)
+        {
+            if (string.IsNullOrEmpty(value))
+                return null;
+
+            // Split by commas, trim whitespace.
+            string[] parts = value.Split(new[] { ',', '|' }, StringSplitOptions.RemoveEmptyEntries);
+            long result = 0;
+
+            foreach (string part in parts)
+            {
+                string trimmed = part.Trim();
+                if (string.IsNullOrEmpty(trimmed))
+                    continue;
+
+                // Try to parse by name first.
+                try
+                {
+                    object parsed = Enum.Parse(enumType, trimmed, ignoreCase);
+                    result |= Convert.ToInt64(parsed);
+                }
+                catch (ArgumentException)
+                {
+                    // If name parsing fails, try numeric parsing.
+                    if (long.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out long numeric))
+                        result |= numeric;
+                    else
+                        throw; // Re-throw if both fail.
+                }
+            }
+
+            return Enum.ToObject(enumType, result);
+        }
+
         // Escape characters in the input string with backslashes.
         private static string ToEscape(string text)
         {
@@ -1034,6 +1146,82 @@ namespace System.Ini
             }
 
             return (char)c;
+        }
+
+        // Converts a byte array to a hexadecimal string without separators.
+        private static string ToHexString(byte[] bytes)
+        {
+            if (bytes == null) return null;
+            if (bytes.Length == 0) return string.Empty;
+
+            char[] chars = new char[bytes.Length * 3 - 1];
+            for (int i = 0, j = 0; i < bytes.Length; i++)
+            {
+                byte b = bytes[i];
+                chars[j++] = GetHexChar(b >> 4);
+                chars[j++] = GetHexChar(b & 0x0F);
+                if (i < bytes.Length - 1)
+                    chars[j++] = ' ';
+            }
+            return new string(chars);
+        }
+
+        // Returns the uppercase hexadecimal character for a nibble value (0-15).
+        private static char GetHexChar(int value)
+        {
+            if (value < 10)
+                return (char)('0' + value);
+            else
+                return (char)('A' + (value - 10));
+        }
+
+        // Converts a hexadecimal string to a byte array.
+        private static byte[] FromHexString(string hex)
+        {
+            if (string.IsNullOrEmpty(hex))
+                return null;
+
+            // Remove all whitespace characters
+            int length = hex.Length;
+            char[] filtered = new char[length];
+            int count = 0;
+            for (int i = 0; i < length; i++)
+            {
+                char c = hex[i];
+                if (!char.IsWhiteSpace(c))
+                {
+                    filtered[count++] = c;
+                }
+            }
+
+            // Must have at least one digit and even number of digits
+            if (count == 0 || (count % 2) != 0)
+                return null;
+
+            byte[] result = new byte[count / 2];
+            int pos = 0;
+            for (int i = 0; i < count; i += 2)
+            {
+                int high = ParseHexDigit(filtered[i]);
+                int low = ParseHexDigit(filtered[i + 1]);
+                if (high < 0 || low < 0)
+                    return null;
+                result[pos++] = (byte)((high << 4) | low);
+            }
+            return result;
+        }
+
+        // Converts a single hexadecimal character (0-9, A-F, a-f) to its integer value.
+        /// </summary>
+        private static int ParseHexDigit(char c)
+        {
+            if (c >= '0' && c <= '9')
+                return c - '0';
+            if (c >= 'A' && c <= 'F')
+                return c - 'A' + 10;
+            if (c >= 'a' && c <= 'f')
+                return c - 'a' + 10;
+            return -1;
         }
 
         // Converts any escaped characters in the input string.
@@ -1128,7 +1316,6 @@ namespace System.Ini
             return c == '\n' || c == '\r';
         }
 
-
         // Moves index to the end of current line in the StringBuilder.
         private static StringBuilder MoveIndexToEndOfLinePosition(StringBuilder sb, ref int index)
         {
@@ -1222,7 +1409,7 @@ namespace System.Ini
         }
 
 
-        // Converts a string to lowercase based on the specified.
+        // Converts a string to lowercase based on the specified comparison.
         private static string MayBeToLower(string text, StringComparison comparison)
         {
             if ((((int)comparison) & 1) != 0)
@@ -1462,11 +1649,16 @@ namespace System.Ini
                 // If the desired type is boolean, try custom conversion for boolean.
                 if (type == typeof(bool))
                 {
-                    if (int.TryParse(value, NumberStyles.Integer | NumberStyles.AllowHexSpecifier, _culture,
-                            out int number))
-                    {
+                    // Try to parse as integer (decimal) with no hex specifier.
+                    if (int.TryParse(value, NumberStyles.Integer, _culture, out int number))
                         return number != 0;
-                    }
+
+                    // Try to parse as hex number (allow "0x" prefix manually).
+                    string hexValue = value.Trim();
+                    if (hexValue.StartsWith("0x") || hexValue.StartsWith("0X"))
+                        hexValue = hexValue.Substring(2);
+                    if (int.TryParse(hexValue, NumberStyles.HexNumber, _culture, out int hexNumber))
+                        return hexNumber != 0;
 
                     if (_trueValues.Contains(value))
                     {
@@ -1484,7 +1676,7 @@ namespace System.Ini
                     try
                     {
                         // Try to parse the value as an enum name or numeric value.
-                        return Enum.Parse(type, value, ignoreCase: true);
+                        return ParseEnum(value, type, ignoreCase: true);
                     }
                     catch
                     {
@@ -1612,7 +1804,7 @@ namespace System.Ini
             if (elementType == typeof(byte))
             {
                 string value = ReadString(section, key, string.Empty);
-                return Convert.FromHexString(value);
+                return FromHexString(value) ?? Array.Empty<byte>();
             }
 
             // Retrieve the array of string values associated with the given section and key.
@@ -1753,6 +1945,10 @@ namespace System.Ini
             if (property == null)
                 throw new ArgumentNullException(nameof(property));
 
+            // Skip properties marked with [IniIgnore]
+            if (property.GetCustomAttributes(typeof(IniIgnoreAttribute), false).Length > 0)
+                return;
+
             // Determine the section name for the INI file entry.
             // If no custom section is specified on the property, use the declaring type name as the default section name.
             Type declaringType = property.DeclaringType;
@@ -1851,6 +2047,7 @@ namespace System.Ini
         {
             // Handle global entries removal.
             bool emptySection = string.IsNullOrEmpty(section);
+            StringBuilder sb = new StringBuilder(_content);
             if (emptySection)
             {
                 int firstSectionIndex = -1;
@@ -1871,7 +2068,7 @@ namespace System.Ini
                 else
                 {
                     // Remove all characters from the beginning up to the first section
-                    StringBuilder sb = new StringBuilder(_content);
+                    
                     sb.Remove(0, firstSectionIndex);
                     Content = sb.ToString();
                 }
@@ -1911,7 +2108,6 @@ namespace System.Ini
             if (ranges.Count == 0)
                 return;
         
-            StringBuilder sb = new StringBuilder(_content);
             // Remove from the end to preserve indices of remaining ranges.
             for (int i = ranges.Count - 1; i >= 0; i--)
             {
@@ -2007,6 +2203,11 @@ namespace System.Ini
                 if (value is string s)
                     str = s;
 
+                else if (value != null && value.GetType().IsEnum)
+                {
+                    str = EnumToString(value);
+                }
+
                 // Use the provided converter or get the default converter for the value type.
                 else if ((converter ?? (converter = TypeDescriptor.GetConverter(type))).CanConvertTo(typeof(string)))
                 {
@@ -2089,14 +2290,16 @@ namespace System.Ini
             {
                 char[] chars = (char[])array;
                 WriteString(section, key, new string(chars));
+                return;
             }
 
             // If the element type is byte, write the value encoded with base64.
             if (elementType == typeof(byte))
             {
                 byte[] bytes = (byte[])array;
-                string value = Convert.ToHexString(bytes, 0, bytes.Length);
+                string value = ToHexString(bytes) ?? string.Empty;
                 WriteString(section, key, value);
+                return;
             }
 
             // Use the provided converter or get the default converter for the element type.
@@ -2178,6 +2381,10 @@ namespace System.Ini
             if (property == null)
                 throw new ArgumentNullException(nameof(property));
 
+            // Skip properties marked with [IniIgnore]
+            if (property.GetCustomAttributes(typeof(IniIgnoreAttribute), false).Length > 0)
+                return;
+
             object value = property.GetValue(obj, null);
 
             if (value is Array array)
@@ -2207,8 +2414,25 @@ namespace System.Ini
             if (property == null)
                 throw new ArgumentNullException(nameof(property));
 
-            string section = GetDeclaringPath(property.DeclaringType);
-            string key = property.Name;
+            // Determine the section name for the INI file entry.
+            // If no custom section is specified on the property, use the declaring type name as the default section name.
+            Type declaringType = property.DeclaringType;
+            string section = property.GetCustomAttributes(typeof(IniSectionAttribute), false)
+                                 .FirstOrDefault() is IniSectionAttribute propertySectionAttribute
+                                 && !propertySectionAttribute.IsDefaultAttribute()
+                                    ? propertySectionAttribute.Name
+                                    : declaringType?.GetCustomAttributes(typeof(IniSectionAttribute), false)
+                                    .FirstOrDefault() is IniSectionAttribute declaringTypeSectionAttribute
+                                      && !declaringTypeSectionAttribute.IsDefaultAttribute()
+                                        ? declaringTypeSectionAttribute.Name
+                                        : GetDeclaringPath(declaringType);
+
+            // Determine the key name for the INI file entry.
+            // If no custom key name is specified, use the property name as the default key.
+            string key = property.GetCustomAttributes(typeof(IniEntryAttribute), false)
+                .FirstOrDefault() is IniEntryAttribute propertyEntryAttribute && !propertyEntryAttribute.IsDefaultAttribute()
+                ? propertyEntryAttribute.Name
+                : property.Name;
 
             // Write the property to the configuration using the determined section and key.
             WriteProperty(section, key, property, obj, converter);
@@ -2344,7 +2568,7 @@ namespace System.Ini
             Type type = obj.GetType();
 
             // Retrieve all instance properties of the given object
-            PropertyInfo[] properties = type.GetProperties(BindingFlags.Public | BindingFlags.NonPublic);
+            PropertyInfo[] properties = type.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
 
             // Write settings for each property
             foreach (PropertyInfo property in properties)
@@ -2415,7 +2639,28 @@ namespace System.Ini
         /// </exception>
         public bool ReadBoolean(string section, string key, bool defaultValue = default)
         {
-            return Read(section, key, 0) > 0;
+            string value = ReadString(section, key, null);
+            if (value == null)
+                return defaultValue;
+
+            // Try to parse as integer (decimal) with no hex specifier.
+            if (int.TryParse(value, NumberStyles.Integer, _culture, out int number))
+                return number != 0;
+
+            // Try to parse as hex number (allow "0x" prefix manually).
+            string hexValue = value.Trim();
+            if (hexValue.StartsWith("0x") || hexValue.StartsWith("0X"))
+                hexValue = hexValue.Substring(2);
+            if (int.TryParse(hexValue, NumberStyles.HexNumber, _culture, out int hexNumber))
+                return hexNumber != 0;
+
+            // Try to parse by sets of true/false values.
+            if (_trueValues.Contains(value))
+                return true;
+            if (_falseValues.Contains(value))
+                return false;
+
+            return defaultValue;
         }
 
         /// <summary>
@@ -2438,7 +2683,10 @@ namespace System.Ini
         /// </exception>
         public char ReadChar(string section, string key, char defaultValue = default)
         {
-            return Read(section, key, defaultValue.ToString())[0];
+            string value = ReadString(section, key, null);
+            if (string.IsNullOrEmpty(value))
+                return defaultValue;
+            return value[0];
         }
 
         /// <summary>
