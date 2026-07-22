@@ -10,10 +10,13 @@
     The class implements methods for working with ini files:
        - parsing INI files;
        - getting sections, keys and values by sections and keys;
-       - setting values (including multiple values for the same 
+       - setting values (including multiple values for the same
          key);
        - removing keys and whole sections;
-       - automatically initializing properties.
+       - automatically initializing properties;
+       - reading and writing embedded  JSON blocks  (raw strings 
+         or dynamic objects)  that may span  multiple lines  and 
+         include comments before the JSON.
 
     All modifications preserve  the  original formatting  of the 
     file,  including whitespace,  comments,  and  line  endings, 
@@ -61,6 +64,8 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Diagnostics;
+using System.Collections;
+using System.Dynamic;
 
 namespace System.Ini
 {
@@ -201,7 +206,11 @@ namespace System.Ini
 
         // Regular expression used for parsing the INI file.
         [NonSerialized]
-        private readonly Regex _regex;
+        private readonly Regex _iniRegex;
+
+        // Regular expression used for parsing the JSON entries.
+        [NonSerialized]
+        private readonly Regex _jsonRegex;
 
         // Indicates whether escape characters are allowed in the INI file.
         [NonSerialized]
@@ -246,7 +255,7 @@ namespace System.Ini
                 if(string.IsNullOrEmpty(value)) return;
 
                 // Iterate over matches using the regex pattern and collect sections and entries names.
-                for (Match match = _regex.Match(_content); match.Success; match = match.NextMatch())
+                for (Match match = _iniRegex.Match(_content); match.Success; match = match.NextMatch())
                 {
                     GroupCollection groups = match.Groups;
                     if (groups["section"].Success || groups["entry"].Success)
@@ -272,13 +281,22 @@ namespace System.Ini
             
             if (content == null) content = string.Empty;
             _comparison = comparison;
-            _regex = new Regex(@"(?=\S)(?<text>(?<comment>(?<open>[#;]+)(?:[^\S\r\n]*)(?<value>.+))|" +
+            var regexOptions = GetRegexOptions(comparison, RegexOptions.Compiled | RegexOptions.ExplicitCapture);
+            _iniRegex = new Regex(@"(?=\S)(?<text>(?<comment>(?<open>[#;]+)(?:[^\S\r\n]*)(?<value>.+))|" +
                                @"(?<section>(?<open>\[)(?:\s*)(?<value>[^\]]*\S+)(?:[^\S\r\n]*)(?<close>\]))|" +
                                @"(?<entry>(?<key>[^=\r\n\[\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:[^\S\r\n]*)(?<value>[^#;\r\n]*))|" +
                                @"(?<undefined>.+))(?<=\S)|" +
                                @"(?<linebreaker>\r\n|\n)|" +
                                @"(?<whitespace>[^\S\r\n]+)",
-                GetRegexOptions(comparison, RegexOptions.Compiled));
+                               regexOptions);
+            _jsonRegex = new Regex(
+                                @"(?<Comment>//.*|/\*.*?\*/)|" +
+                                @"(?<key>""[^""\\]*(?:\\.[^""\\]*)*"")(?=(?:\s|//.*|/\*.*?\*/)*:)|" +
+                                @"(?<value>(?<bool>true)|(?<bool>false)|(?<null>null)|""(?<string>[^""\\]*(?:\\.[^""\\]*)*)""|(?<number>-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?))|" +
+                                @"(?<value_sep>:)|(?<array_open>\[)|(?<array_sep>,)|(?<array_close>\])|" +
+                                @"(?<object_open>{)|(?<object_close>})|" +
+                                @"(?<whitespace>[^\S\r\n]+)|(?<newline>[\r\n]+)|(?<undefined>.*)",
+                                regexOptions);
             _culture = GetCultureInfo(_comparison);
             _allowEscapeChars = allowEscChars;
             _lineBreaker = AutoDetectLineBreaker(content);
@@ -799,9 +817,11 @@ namespace System.Ini
         }
 
         // Sets multiple values for a specific key in a section.
+
         /*TODO:
           Fix the bug in the SetValues method or create a separate logic for RemoveKeys 
           that will carefully remove all occurrences of a key without affecting the surrounding text (comments, empty lines). 
+          Once this bug is fixed, the test will be completely green.
         */
         private void SetValues(string section, string key, params string[] values)
         {
@@ -930,6 +950,590 @@ namespace System.Ini
             // Update the content with the modified StringBuilder content
             Content = sb.ToString();
         }
+
+        // Attempts to locate the start index of a JSON object or array associated with the given entry match.
+        // Returns the index of the first '{' or '[' character, or -1 if not found.
+        // The search first checks the value group, then scans following tokens (whitespace, line breaks, comments).
+        private static int FindJsonStart(Match entryMatch)
+        {
+            // 1. Check inside the value group.
+            string value = entryMatch.Groups["value"].Value;
+            int valueStart = 0;
+            while (valueStart < value.Length && char.IsWhiteSpace(value[valueStart]))
+                valueStart++;
+
+            if (valueStart < value.Length && (value[valueStart] == '{' || value[valueStart] == '['))
+            {
+                return entryMatch.Groups["value"].Index + valueStart;
+            }
+
+            // 2. Check after the entry using full match sequence.
+            Match next = entryMatch.NextMatch();
+            while (next != null && next.Success)
+            {
+                if (next.Groups["whitespace"].Success || next.Groups["linebreaker"].Success || next.Groups["comment"].Success)
+                {
+                    next = next.NextMatch();
+                    continue;
+                }
+
+                string tokenText = next.Value;
+                if (!string.IsNullOrEmpty(tokenText) && (tokenText[0] == '{' || tokenText[0] == '['))
+                {
+                    return next.Index;
+                }
+                break; // First significant token is not JSON start.
+            }
+
+            return -1;
+        }
+
+        // Finds the end index of a JSON object or array starting at the given position.
+        // Returns the index of the matching closing bracket, or -1 on error.
+        private static int FindJsonEnd(string content, int startIndex)
+        {
+            if (startIndex < 0 || startIndex >= content.Length)
+                return -1;
+
+            char first = content[startIndex];
+            if (first != '{' && first != '[')
+                return -1;
+
+            bool inString = false;
+            bool escape = false;
+            Stack<char> brackets = new Stack<char>();
+
+            for (int i = startIndex; i < content.Length; i++)
+            {
+                char c = content[i];
+
+                if (escape)
+                {
+                    escape = false;
+                    continue;
+                }
+
+                if (inString)
+                {
+                    if (c == '\\')
+                        escape = true;
+                    else if (c == '"')
+                        inString = false;
+                    continue;
+                }
+
+                if (c == '"')
+                {
+                    inString = true;
+                    continue;
+                }
+
+                if (c == '{' || c == '[')
+                {
+                    brackets.Push(c);
+                    continue;
+                }
+
+                if (c == '}' || c == ']')
+                {
+                    if (brackets.Count == 0)
+                        return -1;
+
+                    char expected = (c == '}') ? '{' : '[';
+                    if (brackets.Peek() != expected)
+                        return -1;
+
+                    brackets.Pop();
+
+                    if (brackets.Count == 0)
+                        return i;
+                }
+            }
+
+            return -1;
+        }
+
+        // Extracts a raw JSON substring starting at the given index.
+        // Returns the JSON text, or null if the JSON structure is incomplete or invalid.
+        private static string ExtractJson(string content, int startIndex)
+        {
+            int end = FindJsonEnd(content, startIndex);
+            if (end < 0)
+                return null;
+            return content.Substring(startIndex, end - startIndex + 1);
+        }
+
+        // Extracts a JSON object or array associated with the specified section and key.
+        // Returns the raw JSON substring, or defaultValue if not found or malformed.
+        private string GetJson(string section, string key, string defaultValue = null)
+        {
+            // Locate the entry match.
+            bool emptySection = string.IsNullOrEmpty(section);
+            bool inSection = emptySection;
+            Match entryMatch = null;
+
+            for (int i = 0; i < _matches.Count; i++)
+            {
+                Match match = _matches[i];
+                if (match.Groups["section"].Success)
+                {
+                    inSection = match.Groups["value"].Value.Equals(section, _comparison);
+                    if (emptySection) break;
+                    continue;
+                }
+                if (inSection && match.Groups["entry"].Success)
+                {
+                    if (match.Groups["key"].Value.Equals(key, _comparison))
+                    {
+                        entryMatch = match;
+                        break;
+                    }
+                }
+            }
+
+            if (entryMatch == null)
+                return defaultValue;
+
+            int start = FindJsonStart(entryMatch);
+            if (start < 0)
+                return defaultValue;
+
+            return ExtractJson(_content, start) ?? defaultValue;
+        }
+
+        // Writes a JSON value for the specified section and key.
+        // If the key already exists and contains a JSON block, it is replaced preserving surrounding formatting.
+        // If value is null, the entire entry and its associated JSON block are removed.
+        // For non-JSON values, the whole entry is replaced directly.
+        public void SetJson(string section, string key, string value)
+        {
+
+            // Locate the entry match.
+            bool emptySection = string.IsNullOrEmpty(section);
+            bool inSection = emptySection;
+            Match entryMatch = null;
+
+            for (int i = 0; i < _matches.Count; i++)
+            {
+                Match match = _matches[i];
+                if (match.Groups["section"].Success)
+                {
+                    inSection = match.Groups["value"].Value.Equals(section, _comparison);
+                    if (emptySection) break;
+                    continue;
+                }
+                if (inSection && match.Groups["entry"].Success)
+                {
+                    if (match.Groups["key"].Value.Equals(key, _comparison))
+                    {
+                        entryMatch = match;
+                        break;
+                    }
+                }
+            }
+
+            // If entry not found:
+            //   - If value is null, nothing to remove – just return.
+            //   - Otherwise, create a new entry with SetValue (only creation path).
+            if (entryMatch == null)
+            {
+                if (value == null)
+                    return;
+                SetValue(section, key, value);
+                return;
+            }
+
+            // Single StringBuilder for all modifications.
+            StringBuilder sb = new StringBuilder(_content);
+
+            // Special case: remove entry and associated JSON.
+            if (value == null)
+            {
+                int entryStart = entryMatch.Index;
+                int entryEnd = entryMatch.Index + entryMatch.Length;
+
+                int jsonStart = FindJsonStart(entryMatch);
+                if (jsonStart >= 0)
+                {
+                    int jsonEnd = FindJsonEnd(_content, jsonStart);
+                    if (jsonEnd >= 0)
+                    {
+                        int removeEndExclusive = Math.Max(entryEnd, jsonEnd + 1);
+                        sb.Remove(entryStart, removeEndExclusive - entryStart);
+                        Content = sb.ToString();
+                        return;
+                    }
+                }
+
+                // Remove only the entry.
+                sb.Remove(entryMatch.Index, entryMatch.Length);
+                Content = sb.ToString();
+                return;
+            }
+
+            // Non-null value: try to replace JSON block.
+            int start = FindJsonStart(entryMatch);
+            if (start >= 0)
+            {
+                int end = FindJsonEnd(_content, start);
+                if (end >= 0)
+                {
+                    // Replace only the JSON block.
+                    sb.Remove(start, end - start + 1);
+                    sb.Insert(start, value ?? string.Empty);
+                    Content = sb.ToString();
+                    return;
+                }
+            }
+
+            // No valid JSON found – replace the entire entry directly.
+            string newValue = value ?? string.Empty;
+            if (_allowEscapeChars)
+                newValue = ToEscape(newValue);
+            string newLine = $"{key}={newValue}";
+
+            int entryIndex = entryMatch.Index;
+            int entryLength = entryMatch.Length;
+            sb.Remove(entryIndex, entryLength);
+            sb.Insert(entryIndex, newLine);
+            Content = sb.ToString();
+        }
+
+        // Parses the string containing JSON data.
+        private dynamic ParseJson(string json)
+        {
+            var matches = _jsonRegex.Matches(json);
+            int index = 0;
+            try
+            {
+                return ParseValue(matches, ref index);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private dynamic ParseValue(MatchCollection matches, ref int index)
+        {
+            if (index >= matches.Count)
+                return null;
+
+            Match m = matches[index];
+
+            // Skip comments and whitespace
+            while (m != null && (m.Groups["Comment"].Success || m.Groups["whitespace"].Success || m.Groups["newline"].Success))
+            {
+                index++;
+                if (index >= matches.Count) return null;
+                m = matches[index];
+            }
+
+            if (m.Groups["object_open"].Success)
+            {
+                index++;
+                return ParseObject(matches, ref index);
+            }
+            else if (m.Groups["array_open"].Success)
+            {
+                index++;
+                return ParseArray(matches, ref index);
+            }
+            else if (m.Groups["value"].Success)
+            {
+                object val = ParsePrimitive(m);
+                index++;
+                return val;
+            }
+            else
+            {
+                // Unexpected token
+                return null;
+            }
+        }
+
+        // Parses an object (Dictionary) from JSON.
+        private dynamic ParseObject(MatchCollection matches, ref int index)
+        {
+            var dict = new ExpandoObject() as IDictionary<string, object>;
+            bool first = true;
+
+            while (index < matches.Count)
+            {
+                Match m = matches[index];
+
+                // Skip whitespace/comments
+                while (m != null && (m.Groups["Comment"].Success || m.Groups["whitespace"].Success || m.Groups["newline"].Success))
+                {
+                    index++;
+                    if (index >= matches.Count) return null;
+                    m = matches[index];
+                }
+
+                if (m.Groups["object_close"].Success)
+                {
+                    index++;
+                    return dict;
+                }
+
+                if (first)
+                {
+                    // expect key
+                    if (!m.Groups["key"].Success)
+                        return null;
+                    first = false;
+                }
+                else
+                {
+                    // expect comma or close
+                    if (m.Groups["array_sep"].Success)
+                    {
+                        index++;
+                        // skip whitespace
+                        while (index < matches.Count && (matches[index].Groups["Comment"].Success ||
+                               matches[index].Groups["whitespace"].Success || matches[index].Groups["newline"].Success))
+                            index++;
+                        if (index >= matches.Count) return null;
+                        m = matches[index];
+                        if (m.Groups["object_close"].Success)
+                        {
+                            // trailing comma, skip to close
+                            index++;
+                            return dict;
+                        }
+                        // else expect key
+                        if (!m.Groups["key"].Success)
+                            return null;
+                    }
+                    else if (m.Groups["object_close"].Success)
+                    {
+                        index++;
+                        return dict;
+                    }
+                    else
+                    {
+                        return null; // unexpected
+                    }
+                }
+
+                // Parse key
+                string key = UnEscape(m.Groups["key"].Value.Substring(1, m.Groups["key"].Value.Length - 2));
+                index++;
+                // skip whitespace
+                while (index < matches.Count && (matches[index].Groups["Comment"].Success ||
+                       matches[index].Groups["whitespace"].Success || matches[index].Groups["newline"].Success))
+                    index++;
+                if (index >= matches.Count) return null;
+                m = matches[index];
+                if (!m.Groups["value_sep"].Success)
+                    return null;
+                index++;
+                // parse value
+                object val = ParseValue(matches, ref index);
+                dict[key] = val;
+            }
+            return null;
+        }
+
+        // Parses an array from JSON.
+        private dynamic ParseArray(MatchCollection matches, ref int index)
+        {
+            List<object> list = new List<object>();
+            bool first = true;
+
+            while (index < matches.Count)
+            {
+                Match m = matches[index];
+
+                // Skip whitespace/comments
+                while (m != null && (m.Groups["Comment"].Success || m.Groups["whitespace"].Success || m.Groups["newline"].Success))
+                {
+                    index++;
+                    if (index >= matches.Count) return null;
+                    m = matches[index];
+                }
+
+                if (m.Groups["array_close"].Success)
+                {
+                    index++;
+                    return list.ToArray();
+                }
+
+                if (first)
+                {
+                    first = false;
+                }
+                else
+                {
+                    // expect comma or close
+                    if (m.Groups["array_sep"].Success)
+                    {
+                        index++;
+                        // skip whitespace
+                        while (index < matches.Count && (matches[index].Groups["Comment"].Success ||
+                               matches[index].Groups["whitespace"].Success || matches[index].Groups["newline"].Success))
+                            index++;
+                        if (index >= matches.Count) return null;
+                        m = matches[index];
+                        if (m.Groups["array_close"].Success)
+                        {
+                            // trailing comma, skip to close
+                            index++;
+                            return list.ToArray();
+                        }
+                        // else parse value
+                    }
+                    else if (m.Groups["array_close"].Success)
+                    {
+                        index++;
+                        return list.ToArray();
+                    }
+                    else
+                    {
+                        return null; // unexpected
+                    }
+                }
+
+                // parse value
+                object val = ParseValue(matches, ref index);
+                list.Add(val);
+            }
+            return null;
+        }
+
+        // Parses regular values from JSON.
+        private object ParsePrimitive(Match m)
+        {
+            if (m.Groups["bool"].Success)
+                return bool.Parse(m.Groups["bool"].Value);
+            if (m.Groups["null"].Success)
+                return null;
+            if (m.Groups["string"].Success)
+                return UnEscape(m.Groups["string"].Value);
+            if (m.Groups["number"].Success)
+            {
+                string num = m.Groups["number"].Value;
+                if (double.TryParse(num, System.Globalization.NumberStyles.Float,
+                                    System.Globalization.CultureInfo.InvariantCulture, out double d))
+                    return d;
+                return num; // fallback
+            }
+            return null;
+        }
+
+        // Serializes a dynamic object to a JSON string.
+        // Supports ExpandoObject, IDictionary<string, object>, IEnumerable (non-string), and primitives.
+        private string SerializeJson(object value, bool beautify = false)
+        {
+            var sb = new StringBuilder();
+            SerializeValue(value, sb, beautify, 0);
+            return sb.ToString();
+        }
+
+        // Serializes a regular value to JSON format.
+        private void SerializeValue(object value, StringBuilder sb, bool beautify, int indentLevel)
+        {
+            if (value == null)
+            {
+                sb.Append("null");
+                return;
+            }
+
+            Type type = value.GetType();
+
+            // Primitive types
+            if (type == typeof(string))
+            {
+                sb.Append('"').Append(ToEscape((string)value)).Append('"');
+                return;
+            }
+            if (type == typeof(bool))
+            {
+                sb.Append((bool)value ? "true" : "false");
+                return;
+            }
+            if (type == typeof(int) || type == typeof(long) || type == typeof(short) ||
+                type == typeof(uint) || type == typeof(ulong) || type == typeof(ushort) ||
+                type == typeof(double) || type == typeof(float) || type == typeof(decimal))
+            {
+                string s = Convert.ToString(value, _culture);
+                sb.Append(s);
+                return;
+            }
+
+            // Object (IDictionary<string, object> or ExpandoObject)
+            if (value is IDictionary<string, object> dict)
+            {
+                SerializeObject(dict, sb, beautify, indentLevel);
+                return;
+            }
+
+            // Array or enumerable (except string)
+            if (value is IEnumerable enumerable && !(value is string))
+            {
+                SerializeArray(enumerable, sb, beautify, indentLevel);
+                return;
+            }
+
+            // Fallback: ToString() with escaping
+            sb.Append('"').Append(ToEscape(value.ToString())).Append('"');
+        }
+
+        // Serializes a dictionary (object) to JSON format.
+        private void SerializeObject(IDictionary<string, object> dict, StringBuilder sb, bool beautify, int indentLevel)
+        {
+            sb.Append('{');
+            bool first = true;
+            foreach (var kvp in dict)
+            {
+                if (!first)
+                    sb.Append(',');
+                if (beautify)
+                {
+                    sb.Append('\n').Append(' ', (indentLevel + 1) * 2);
+                }
+                else if (!first)
+                {
+                    sb.Append(' ');
+                }
+                first = false;
+
+                sb.Append('"').Append(ToEscape(kvp.Key)).Append('"').Append(':');
+                if (beautify)
+                    sb.Append(' ');
+
+                SerializeValue(kvp.Value, sb, beautify, indentLevel + 1);
+            }
+            if (beautify && dict.Count > 0)
+                sb.Append('\n').Append(' ', indentLevel * 2);
+            sb.Append('}');
+        }
+
+        // Serializes an enumerable (array) to JSON format.
+        private void SerializeArray(IEnumerable enumerable, StringBuilder sb, bool beautify, int indentLevel)
+        {
+            sb.Append('[');
+            bool first = true;
+            foreach (object item in enumerable)
+            {
+                if (!first)
+                    sb.Append(',');
+                if (beautify)
+                {
+                    sb.Append('\n').Append(' ', (indentLevel + 1) * 2);
+                }
+                else if (!first)
+                {
+                    sb.Append(' ');
+                }
+                first = false;
+                SerializeValue(item, sb, beautify, indentLevel + 1);
+            }
+            if (beautify && first == false)
+                sb.Append('\n').Append(' ', indentLevel * 2);
+            sb.Append(']');
+        }
+
 
         // Returns a CultureInfo object that defines the string comparison rules for the specified StringComparison.
         private static CultureInfo GetCultureInfo(StringComparison comparison)
@@ -1565,6 +2169,49 @@ namespace System.Ini
         }
 
         /// <summary>
+        /// Reads a JSON string associated with the specified section and key.
+        /// Returns the raw JSON substring, or <paramref name="defaultValue"/> if not found or malformed.
+        /// </summary>
+        /// <param name="section">Section name. Pass <c>null</c> for global entries.</param>
+        /// <param name="key">Key name.</param>
+        /// <param name="defaultValue">Default value returned if the entry is not found or JSON is invalid.</param>
+        /// <returns>The raw JSON string, or <paramref name="defaultValue"/> if not found.</returns>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="key"/> is <c>null</c>.</exception>
+        public string ReadJsonString(string section, string key, string defaultValue = null)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+            return GetJson(section, key, defaultValue);
+        }
+
+        /// <summary>
+        /// Reads a JSON value from the specified section and key, and returns it as a dynamic object.
+        /// </summary>
+        /// <param name="section">Section name. Pass <c>null</c> for global entries.</param>
+        /// <param name="key">Key name.</param>
+        /// <param name="defaultValue">Default dynamic object returned if entry not found or JSON invalid.</param>
+        /// <returns>A dynamic object representing the JSON, or <paramref name="defaultValue"/> if not found.</returns>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="key"/> is <c>null</c>.</exception>
+        public dynamic ReadJsonObject(string section, string key, dynamic defaultValue = null)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+
+            string json = GetJson(section, key, null);
+            if (json == null)
+                return defaultValue;
+
+            try
+            {
+                return ParseJson(json);
+            }
+            catch
+            {
+                return defaultValue;
+            }
+        }
+
+        /// <summary>
         /// Reads an array of strings associated with the specified section and key from the INI file.
         /// </summary>
         /// <param name="section">
@@ -2140,6 +2787,46 @@ namespace System.Ini
                 throw new ArgumentNullException(nameof(key));
 
             SetValue(section, key, value);
+        }
+
+        /// <summary>
+        /// Writes a JSON string to the specified section and key.
+        /// If the key already exists and contains a JSON block, it is replaced preserving surrounding formatting.
+        /// If <paramref name="value"/> is <c>null</c>, the entry and its associated JSON block are removed.
+        /// </summary>
+        /// <param name="section">Section name. Pass <c>null</c> for global entries.</param>
+        /// <param name="key">Key name.</param>
+        /// <param name="value">JSON string to write, or <c>null</c> to remove.</param>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="key"/> is <c>null</c>.</exception>
+        public void WriteJsonString(string section, string key, string value)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+            SetJson(section, key, value);
+        }
+
+        /// <summary>
+        /// Writes a dynamic object as JSON to the specified section and key.
+        /// If <paramref name="value"/> is <c>null</c>, the entry is removed.
+        /// </summary>
+        /// <param name="section">Section name. Pass <c>null</c> for global entries.</param>
+        /// <param name="key">Key name.</param>
+        /// <param name="value">The dynamic object to serialize to JSON.</param>
+        /// <param name="beautify">If <c>true</c>, formats JSON with indentation.</param>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="key"/> is <c>null</c>.</exception>
+        public void WriteJsonObject(string section, string key, dynamic value, bool beautify = false)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+
+            if (value == null)
+            {
+                SetJson(section, key, null);
+                return;
+            }
+
+            string json = SerializeJson(value, beautify);
+            SetJson(section, key, json);
         }
 
         /// <summary>
