@@ -298,10 +298,21 @@ namespace System.Ini
             
             if (content == null) content = string.Empty;
             _comparison = comparison;
-            var regexOptions = GetRegexOptions(comparison, RegexOptions.Compiled | RegexOptions.ExplicitCapture);
+            _culture = GetCultureInfo(_comparison);
+            _allowEscapeChars = allowEscChars;
+            _allowMultiLine = allowMultiLine;
+            _lineBreaker = AutoDetectLineBreaker(content);
+            _matches = new List<Match>(16);
+            Content = content;
+            StringComparer comparer = GetComparer(comparison);
+            RegexOptions regexOptions = GetRegexOptions(comparison, RegexOptions.Compiled | RegexOptions.ExplicitCapture);
+            _trueValues = new HashSet<string>(comparer) { "true", "yes", "on", "enable", "1" };
+            _falseValues = new HashSet<string>(comparer) { "false", "no", "off", "disable", "0" };
             _iniRegex = new Regex(@"(?=\S)(?<text>(?<comment>(?<open>[#;]+)(?:[^\S\r\n]*)(?<value>.+))|" +
                                @"(?<section>(?<open>\[)(?:\s*)(?<value>[^\]]*\S+)(?:[^\S\r\n]*)(?<close>\]))|" +
-                               @"(?<entry>(?<key>[^=\r\n\ [\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:\s*(?<value>\{(?:[^{}""]+|""(?:\\.|[^""])*""|(?<o>\{)|(?<-o>\}))*(?(o)(?!))\})|((?:[^\S\r\n]*)(?<value>[^#;\r\n]*))))|" +
+                               (allowMultiLine 
+                               ? @"(?<entry>(?<key>[^=\r\n\ [\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:\s*(?<value>\{(?:[^{}""]+|""(?:\\.|[^""])*""|(?<o>\{)|(?<-o>\}))*(?(o)(?!))\})|((?:[^\S\r\n]*)(?<value>[^#;\r\n]*))))|" 
+                               : @"(?<entry>(?<key>[^=\r\n\ [\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:[^\S\r\n]*)(?<value>[^#;\r\n]*))|") +
                                @"(?<undefined>.+))(?<=\S)|" +
                                @"(?<linebreaker>\r\n|\n)|" +
                                @"(?<whitespace>[^\S\r\n]+)",
@@ -314,14 +325,6 @@ namespace System.Ini
                                 @"(?<object_open>{)|(?<object_close>})|" +
                                 @"(?<whitespace>[^\S\r\n]+)|(?<newline>[\r\n]+)|(?<undefined>.*)",
                                 regexOptions);
-            _culture = GetCultureInfo(_comparison);
-            _allowEscapeChars = allowEscChars;
-            _lineBreaker = AutoDetectLineBreaker(content);
-            _matches = new List<Match>(16);
-            Content = content;
-            StringComparer comparer = GetComparer(comparison);
-            _trueValues = new HashSet<string>(comparer) { "true", "yes", "on", "enable", "1" };
-            _falseValues = new HashSet<string>(comparer) { "false", "no", "off", "disable", "0" };
         }
 
         #endregion
@@ -1059,16 +1062,21 @@ namespace System.Ini
         {
             var matches = _jsonRegex.Matches(json);
             int index = 0;
+
+            // Begin parsing JSON.
             try
             {
                 return ParseValue(matches, ref index);
             }
+
+            // If empty string or syntax errors.
             catch
             {
                 return null;
             }
         }
 
+        // Parses the JSON value.
         private dynamic ParseValue(MatchCollection matches, ref int index)
         {
             if (index >= matches.Count)
@@ -1076,7 +1084,7 @@ namespace System.Ini
 
             Match m = matches[index];
 
-            // Skip comments and whitespace
+            // Skip comments and whitespace.
             while (m != null && (m.Groups["Comment"].Success || m.Groups["whitespace"].Success || m.Groups["newline"].Success))
             {
                 index++;
@@ -1084,25 +1092,34 @@ namespace System.Ini
                 m = matches[index];
             }
 
-            if (m.Groups["object_open"].Success)
+            // Parse difference type of values.
+
+            // Object { ... }
+            if (m.Groups["object_open"].Success) 
             {
                 index++;
                 return ParseObject(matches, ref index);
             }
-            else if (m.Groups["array_open"].Success)
+
+            // Array [ ... ]
+            else if (m.Groups["array_open"].Success) 
             {
                 index++;
                 return ParseArray(matches, ref index);
             }
-            else if (m.Groups["value"].Success)
+
+            // Primitive value.
+            else if (m.Groups["value"].Success) 
             {
                 object val = ParsePrimitive(m);
                 index++;
                 return val;
             }
+
+            // Unexpected token.
             else
             {
-                // Unexpected token
+                
                 return null;
             }
         }
@@ -1117,7 +1134,7 @@ namespace System.Ini
             {
                 Match m = matches[index];
 
-                // Skip whitespace/comments
+                // Skip whitespace/comments.
                 while (m != null && (m.Groups["Comment"].Success || m.Groups["whitespace"].Success || m.Groups["newline"].Success))
                 {
                     index++;
@@ -1125,6 +1142,7 @@ namespace System.Ini
                     m = matches[index];
                 }
 
+                // End of the object.
                 if (m.Groups["object_close"].Success)
                 {
                     index++;
@@ -1133,33 +1151,37 @@ namespace System.Ini
 
                 if (first)
                 {
-                    // expect key
+                    // Expect key.
                     if (!m.Groups["key"].Success)
                         return null;
                     first = false;
                 }
                 else
                 {
-                    // expect comma or close
+                    // Expect comma or close.
                     if (m.Groups["array_sep"].Success)
                     {
                         index++;
-                        // skip whitespace
+                        // Skip whitespace.
                         while (index < matches.Count && (matches[index].Groups["Comment"].Success ||
                                matches[index].Groups["whitespace"].Success || matches[index].Groups["newline"].Success))
                             index++;
                         if (index >= matches.Count) return null;
                         m = matches[index];
+
+                        // Trailing comma, skip to close...
                         if (m.Groups["object_close"].Success)
                         {
-                            // trailing comma, skip to close
                             index++;
                             return dict;
                         }
-                        // else expect key
+
+                        // ...else expect key.
                         if (!m.Groups["key"].Success)
                             return null;
                     }
+
+                    // End of the object.
                     else if (m.Groups["object_close"].Success)
                     {
                         index++;
@@ -1167,23 +1189,27 @@ namespace System.Ini
                     }
                     else
                     {
-                        return null; // unexpected
+                        return null; // Unexpected token.
                     }
                 }
 
-                // Parse key
+                // Parse key.
                 string key = UnEscape(m.Groups["key"].Value.Substring(1, m.Groups["key"].Value.Length - 2));
                 index++;
-                // skip whitespace
+
+                // Skip whitespace.
                 while (index < matches.Count && (matches[index].Groups["Comment"].Success ||
                        matches[index].Groups["whitespace"].Success || matches[index].Groups["newline"].Success))
                     index++;
                 if (index >= matches.Count) return null;
                 m = matches[index];
+
+                // Expect delimiter.
                 if (!m.Groups["value_sep"].Success)
                     return null;
                 index++;
-                // parse value
+
+                // Parse value.
                 object val = ParseValue(matches, ref index);
                 dict[key] = val;
             }
@@ -1194,6 +1220,9 @@ namespace System.Ini
         private dynamic ParseArray(MatchCollection matches, ref int index)
         {
             List<object> list = new List<object>();
+
+            // Indicates whether the next element is the first one in the array.
+            // The first element is not expected to be preceded by a comma.
             bool first = true;
 
             while (index < matches.Count)
@@ -1208,35 +1237,39 @@ namespace System.Ini
                     m = matches[index];
                 }
 
+                // End of array.
                 if (m.Groups["array_close"].Success)
                 {
                     index++;
                     return list.ToArray();
                 }
 
+                // The first element can appear immediately after '['.
                 if (first)
                 {
                     first = false;
                 }
                 else
                 {
-                    // expect comma or close
+                    // Expect comma or close.
                     if (m.Groups["array_sep"].Success)
                     {
+                        // Skip whitespace.
                         index++;
-                        // skip whitespace
                         while (index < matches.Count && (matches[index].Groups["Comment"].Success ||
                                matches[index].Groups["whitespace"].Success || matches[index].Groups["newline"].Success))
                             index++;
                         if (index >= matches.Count) return null;
                         m = matches[index];
+
+                        // Trailing comma, skip to close.
                         if (m.Groups["array_close"].Success)
                         {
-                            // trailing comma, skip to close
                             index++;
                             return list.ToArray();
                         }
-                        // else parse value
+
+                    // ...else parse value
                     }
                     else if (m.Groups["array_close"].Success)
                     {
@@ -1245,35 +1278,53 @@ namespace System.Ini
                     }
                     else
                     {
-                        return null; // unexpected
+                        return null; // Unexpected token.
                     }
                 }
 
-                // parse value
+                // Parse value.
                 object val = ParseValue(matches, ref index);
                 list.Add(val);
             }
             return null;
         }
 
-        // Parses regular values from JSON.
-        private object ParsePrimitive(Match m)
+        // Parses primitive values from JSON.
+        private object ParsePrimitive(Match match)
         {
-            if (m.Groups["bool"].Success)
-                return bool.Parse(m.Groups["bool"].Value);
-            if (m.Groups["null"].Success)
+            // Null.
+            if (match.Groups["null"].Success)
                 return null;
-            if (m.Groups["string"].Success)
-                return UnEscape(m.Groups["string"].Value);
-            if (m.Groups["number"].Success)
+
+            // Boolean.
+            if (match.Groups["bool"].Success)
             {
-                string num = m.Groups["number"].Value;
-                if (double.TryParse(num, System.Globalization.NumberStyles.Float,
-                                    System.Globalization.CultureInfo.InvariantCulture, out double d))
-                    return d;
-                return num; // fallback
+                return bool.TryParse(match.Groups["bool"].Value, out bool value)
+                    ? (object)value
+                    : null;
             }
-            return null;
+
+            // String.
+            if (match.Groups["string"].Success)
+            {
+                string value = match.Groups["string"].Value;
+                if (_allowEscapeChars) value = UnEscape(value);
+                return value;
+            }
+
+            // Number.
+            if (match.Groups["number"].Success)
+            {
+                return double.TryParse(
+                    match.Groups["number"].Value,
+                    NumberStyles.Float,
+                    _culture,
+                    out double value)
+                    ? (object)value
+                    : null;
+            }
+
+            return null; // Unknown token.
         }
 
         // Serializes a dynamic object to a JSON string.
@@ -1288,6 +1339,7 @@ namespace System.Ini
         // Serializes a regular value to JSON format.
         private void SerializeValue(object value, StringBuilder sb, bool beautify, int indentLevel)
         {
+            // Null.
             if (value == null)
             {
                 sb.Append("null");
@@ -1296,17 +1348,23 @@ namespace System.Ini
 
             Type type = value.GetType();
 
-            // Primitive types
+            // String.
             if (type == typeof(string))
             {
-                sb.Append('"').Append(ToEscape((string)value)).Append('"');
+                string str = (string)value;
+                if (_allowEscapeChars) str = ToEscape(str);
+                sb.Append('"').Append(str).Append('"');
                 return;
             }
+
+            // Boolean.
             if (type == typeof(bool))
             {
                 sb.Append((bool)value ? "true" : "false");
                 return;
             }
+
+            // Numeric types.
             if (type == typeof(int) || type == typeof(long) || type == typeof(short) ||
                 type == typeof(uint) || type == typeof(ulong) || type == typeof(ushort) ||
                 type == typeof(double) || type == typeof(float) || type == typeof(decimal))
@@ -1316,63 +1374,90 @@ namespace System.Ini
                 return;
             }
 
-            // Object (IDictionary<string, object> or ExpandoObject)
+            // Object (IDictionary<string, object> or ExpandoObject).
             if (value is IDictionary<string, object> dict)
             {
                 SerializeObject(dict, sb, beautify, indentLevel);
                 return;
             }
 
-            // Array or enumerable (except string)
+            // Array or enumerable (except string).
             if (value is IEnumerable enumerable && !(value is string))
             {
                 SerializeArray(enumerable, sb, beautify, indentLevel);
                 return;
             }
 
-            // Fallback: ToString() with escaping
-            sb.Append('"').Append(ToEscape(value.ToString())).Append('"');
+            // Fallback: ToString() with escaping.
+            string text = Convert.ToString(value, _culture);
+            if (_allowEscapeChars) text = ToEscape(text);
+            sb.Append('"').Append(text).Append('"');
         }
 
         // Serializes a dictionary (object) to JSON format.
         private void SerializeObject(IDictionary<string, object> dict, StringBuilder sb, bool beautify, int indentLevel)
         {
+            // Open object.
             sb.Append('{');
+
+            // The first property is written without a leading comma.
+            // All subsequent properties are prefixed with a comma.
             bool first = true;
+
             foreach (var kvp in dict)
             {
+                // Separate properties with commas.
                 if (!first)
                     sb.Append(',');
+
+                // Append indents.
                 if (beautify)
                 {
+                    // Start each element on a new indented line.
                     sb.Append('\n').Append(' ', (indentLevel + 1) * 2);
                 }
                 else if (!first)
                 {
                     sb.Append(' ');
                 }
+
+                // All remaining properties are no longer the first.
                 first = false;
 
-                sb.Append('"').Append(ToEscape(kvp.Key)).Append('"').Append(':');
-                if (beautify)
-                    sb.Append(' ');
+                // Append a key.
+                string key = kvp.Key;
+                if (_allowEscapeChars) key = ToEscape(key);
+                sb.Append('"').Append(key).Append('"').Append(':');
 
+                // Append a value.
                 SerializeValue(kvp.Value, sb, beautify, indentLevel + 1);
             }
+
+            // Append indents.
             if (beautify && dict.Count > 0)
                 sb.Append('\n').Append(' ', indentLevel * 2);
+
+            // Close object.
             sb.Append('}');
         }
 
         // Serializes an enumerable (array) to JSON format.
         private void SerializeArray(IEnumerable enumerable, StringBuilder sb, bool beautify, int indentLevel)
         {
+            // Open array.
             sb.Append('[');
+
+            // Indicates whether the next element is the first one.
+            // Used to suppress the leading comma and control spacing.
             bool first = true;
+
             foreach (object item in enumerable)
             {
+                // Separate array elements with commas.
                 if (!first)
                     sb.Append(',');
+
+                // Append indents.
                 if (beautify)
                 {
                     sb.Append('\n').Append(' ', (indentLevel + 1) * 2);
@@ -1381,11 +1466,19 @@ namespace System.Ini
                 {
                     sb.Append(' ');
                 }
+
+                // All subsequent elements require a separator.
                 first = false;
+
+                // Append a value.
                 SerializeValue(item, sb, beautify, indentLevel + 1);
             }
-            if (beautify && first == false)
+
+            // Align the closing bracket with the opening one.
+            if (beautify && !first)
                 sb.Append('\n').Append(' ', indentLevel * 2);
+
+            // Close array.
             sb.Append(']');
         }
 
@@ -1719,7 +1812,7 @@ namespace System.Ini
 
             if (inputLength == 0) return text;
 
-            // Find the first occurrence of backslash or return the original text.
+            // Find the first occurrence of backslash or return the original text without allocating.
             for (int i = 0; i < inputLength; ++i)
             {
                 if (text[i] == '\\')
@@ -1731,7 +1824,7 @@ namespace System.Ini
 
             if (pos < 0) return text; // Backslash not found.
 
-            // If backslash is found.
+            // Copy the unchanged prefix preceding the first escape sequence.
             StringBuilder sb = new StringBuilder(text.Substring(0, pos));
 
             do
@@ -1739,6 +1832,8 @@ namespace System.Ini
                 char c = text[pos++];
                 if (c == '\\')
                 {
+                    // Read the escape code following the backslash.
+                    // If the backslash is the last character, keep it unchanged.
                     c = pos < inputLength ? text[pos] : '\\';
                     switch (c)
                     {
@@ -1769,14 +1864,17 @@ namespace System.Ini
                         case 'v':
                             c = '\v';
                             break;
+                        // Unicode escape: \uXXXX
                         case 'u' when pos < inputLength - 3:
                             c = UnHex(text.Substring(++pos, 4));
                             pos += 3;
                             break;
+                        // Hex escape: \xXX
                         case 'x' when pos < inputLength - 1:
                             c = UnHex(text.Substring(++pos, 2));
                             pos++;
                             break;
+                        // Control character escape: \cA .. \cZ
                         case 'c' when pos < inputLength:
                             c = text[++pos];
                             if (c >= 'a' && c <= 'z')
@@ -1784,11 +1882,14 @@ namespace System.Ini
                             if ((c = (char)(c - 0x40U)) >= ' ')
                                 c = '?';
                             break;
+                        // Unknown escape sequence.
+                        // Preserve it exactly as it appears in the source.
                         default:
                             sb.Append("\\" + c);
                             pos++;
                             continue;
                     }
+                    // Skip the escape code character.
                     pos++;
                 }
                 sb.Append(c);
@@ -1798,7 +1899,7 @@ namespace System.Ini
             return sb.ToString();
         }
 
-        internal static bool IsNewLine(char c)
+        private static bool IsNewLine(char c)
         {
             return c == '\n' || c == '\r';
         }
