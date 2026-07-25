@@ -2,7 +2,7 @@
 
 •   File: IniFile.cs
 
-•   Description
+•   Description:
 
     IniFile is a class that provides parsing,  editing,  and serialization 
     of INI files using regular expressions.
@@ -27,11 +27,11 @@
     The class  can load INI  data  from strings, text readers, streams, or
     files, and can save the modified content back without reformatting.
 
-•   License
+•   License:
 
     This software is distributed under the MIT License (MIT)
 
-    © 2024-2026 Pavel Bashkardin.
+    Copyright © 2024-2026 Pavel Bashkardin.
 
     Permission  is hereby granted, free of charge, to any person obtaining
     a  copy  of this  software    and associated documentation  files (the
