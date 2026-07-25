@@ -293,7 +293,7 @@ INI is a simple and widely used configuration format. However, despite its simpl
 
 The goal of this project is to provide a flexible parser that can handle these variations while preserving the original file structure. Thus, using regular expressions to parse INI files provides high performance, flexibility, preservation of original formatting and ease of use, which makes this approach an effective solution for working with configuration data in the INI format.
 
-## INI file format
+## INI File Format
 
 This format is quite simple and has long been known to most developers. In general, it is a list of key-value pairs separated by an equal sign, called parameters. For convenience, parameters are grouped into sections, which are enclosed by square brackets. However, despite this, there are still a number of nuances and small differences, since a single standard is not strictly defined. If I create a new parser, my goal is to make it universal, so that it extracts information as efficiently as possible, so when writing a universal parser for working with INI files, these features must be taken into account.
 
@@ -307,7 +307,7 @@ Here is an example of syntax highlighting using a popular text editor. As you ca
 
 ![image](https://github.com/user-attachments/assets/f0d7bfc9-fa28-4d3a-98f4-619e16a8a572)
 
-## Regular expression
+## Regular Expression
 
 After much research, I came up with the following regular expression that allows you to determine the meaning of each character in an ini file. In its entirety it looks like this:  
 ```regex
