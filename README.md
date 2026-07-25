@@ -360,7 +360,19 @@ You can experiment with this regular expression using this [link](https://regex1
 
 ## C# Implementation
 
-To solve the problem of parsing INI files using regular expressions, I created the **IniFile** class. This class will be responsible for reading and parsing the contents of an INI file using regular expressions to extract keys, values, and sections. The class has methods for loading a file, getting a list of sections, getting values ​​by keys, and writing changes back to the file. Using regular expressions, IniFile will be able to handle various configuration file formats, including files with comments, indents, spaces, syntax errors, and other features. This will make the parser more flexible and universal. To use the class, you need to pass it a string or stream containing the INI file data and parsing settings.
+To solve the problem of editing INI files while preserving their original structure, I created the **IniFile** class.
+
+The key idea behind the implementation is a layered architecture that separates parsing rules, internal processing logic, and the public API:
+
+- **Regular expression layer** — defines the structure of the INI format and identifies sections, keys, values, comments, and multiline blocks.
+- **Internal processing layer** — provides operations for searching, modifying, inserting, and removing data without exposing parsing details.
+- **Public API layer** — provides a simple and stable interface for working with INI files.
+
+This separation makes the project easier to maintain and extend. New features and parsing improvements can be implemented without breaking the public API or rewriting existing functionality.
+
+For example, JSON support did not require redesigning the whole parser. It was implemented by extending the existing parsing rules and adding several methods on top of the existing infrastructure. Multiline value support was obtained naturally as part of the same mechanism, without requiring a separate storage model or additional complexity.
+
+The result is a flexible INI editor that can handle different file variations, including comments, custom formatting, duplicate keys, syntax errors, and embedded structured data, while keeping the original file layout intact.
 
 ## License
 
