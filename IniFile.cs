@@ -2728,10 +2728,9 @@ namespace System.Ini
             // Remove trailing line breakers.
             if (sb.Length > 0)
             {
-                int i = sb.Length - 1;
-                if (sb[i] == '\n')
+                if (sb[sb.Length - 1] == '\n')
                     sb.Length--;
-                if (sb.Length > 0 && sb[i] == '\r')
+                if (sb.Length > 0 && sb[sb.Length - 1] == '\r')
                     sb.Length--;
             }
 
