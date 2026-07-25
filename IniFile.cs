@@ -773,6 +773,10 @@ namespace System.Ini
                         continue;
 
                     value = match.Groups["value"].Value;
+
+
+
+
                     if (_allowMultiLine && unwrap) value = UnWrap(value);
                     if (_allowEscapeChars) value = UnEscape(value);
 
@@ -2588,7 +2592,7 @@ namespace System.Ini
             string currentSection = string.Empty; // global
             Dictionary<string, List<string>> currentDict = null;
 
-            for (int i = 0; i < _matches.Count; i++)
+            for (int i = 0; i < _matches.Count; i++) // Ignore comments, whitespace, etc.
             {
                 Match match = _matches[i];
 
@@ -2625,13 +2629,8 @@ namespace System.Ini
                     string value = match.Groups["value"].Value;
 
                     // Unwrap/unescape if needed
-                    if (_allowEscapeChars)
-                        value = UnEscape(value);
-                    else
-                    {
-                        string lineBreaker = _allowMultiLine ? _lineBreaker : " ";
-                        if (_allowMultiLine) value = UnWrap(value);
-                    }
+                    if (_allowMultiLine) value = UnWrap(value);
+                    if (_allowEscapeChars) value = UnEscape(value);
 
                     // Normalize key case
                     key = NormalizeCase(key, _comparison);
@@ -2643,7 +2642,6 @@ namespace System.Ini
                     }
                     values.Add(value);
                 }
-                // Ignore comments, whitespace, etc.
             }
 
             return result;
@@ -2662,7 +2660,6 @@ namespace System.Ini
             var sb = new StringBuilder();
 
             // We'll process matches directly to preserve order and avoid extra allocations.
-            bool inGlobal = true;
             bool firstSection = true;
             string currentSection = null;
 
@@ -2688,7 +2685,6 @@ namespace System.Ini
                         sectionOrder.Add(section);
                     }
                     currentSection = section;
-                    inGlobal = false;
                     continue;
                 }
 
@@ -2696,15 +2692,10 @@ namespace System.Ini
                 {
                     string key = match.Groups["key"].Value;
                     string value = match.Groups["value"].Value;
-                    /*if (_allowEscapeChars) 
-                        value = UnEscape(value);
-                    else
-                    {
-                        string lineBreaker = _allowMultiLine ? _lineBreaker : " ";
-                        if (_allowMultiLine) value = UnWrap(value);
-                    }*/
+                    //if (_allowMultiLine) value = UnWrap(value);
+                    //if (_allowEscapeChars) value = UnEscape(value);
 
-                    if (inGlobal)
+                    if (currentSection == null) // Global section.
                     {
                         globalEntries.Add(new KeyValuePair<string, string>(key, value));
                     }
@@ -2714,10 +2705,9 @@ namespace System.Ini
                             list.Add(new KeyValuePair<string, string>(key, value));
                     }
                 }
-                // Ignore other groups
             }
 
-            // Write global entries
+            // Write global entries.
             if (globalEntries.Count > 0)
             {
                 foreach (var kv in globalEntries)
@@ -2725,7 +2715,7 @@ namespace System.Ini
                 sb.AppendLine();
             }
 
-            // Write sections
+            // Write sections.
             foreach (string section in sectionOrder)
             {
                 sb.AppendLine($"[{section}]");
@@ -2735,12 +2725,13 @@ namespace System.Ini
                 sb.AppendLine(); // blank line after each section
             }
 
-            // Remove trailing newline
+            // Remove trailing line breakers.
             if (sb.Length > 0)
             {
-                if (sb[^1] == '\n')
+                int i = sb.Length - 1;
+                if (sb[i] == '\n')
                     sb.Length--;
-                if (sb.Length > 0 && sb[^1] == '\r')
+                if (sb.Length > 0 && sb[i] == '\r')
                     sb.Length--;
             }
 
