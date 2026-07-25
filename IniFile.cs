@@ -204,6 +204,8 @@ namespace System.Ini
 
         #region Private fields
 
+        private const int MaxJsonDepth = 64;
+
         // Private field for storing the content of the INI file.
         private string _content;
 
@@ -240,11 +242,17 @@ namespace System.Ini
         [NonSerialized]
         private readonly StringComparison _comparison = StringComparison.InvariantCultureIgnoreCase;
 
+        // Boolean values aliases.
         [NonSerialized]
         private readonly HashSet<string> _trueValues;
-
         [NonSerialized]
         private readonly HashSet<string> _falseValues;
+
+        // Array containing the characters that are not allowed in path names.
+        [NonSerialized]
+        private static readonly char[] _invalidPathChars = Path.GetInvalidPathChars();
+
+
 
         #endregion
 
@@ -263,7 +271,7 @@ namespace System.Ini
             {
                 _content = value ?? (_content = string.Empty);
                 _matches.Clear();
-                if(string.IsNullOrEmpty(value)) return;
+                if (string.IsNullOrEmpty(value)) return;
 
                 // Iterate over matches using the regex pattern and collect sections and entries names.
                 for (Match match = _iniRegex.Match(_content); match.Success; match = match.NextMatch())
@@ -295,7 +303,7 @@ namespace System.Ini
         {
             if ((uint)comparison > (uint)StringComparison.OrdinalIgnoreCase)
                 throw new ArgumentOutOfRangeException(nameof(comparison));
-            
+
             if (content == null) content = string.Empty;
             _comparison = comparison;
             _culture = GetCultureInfo(_comparison);
@@ -310,8 +318,8 @@ namespace System.Ini
             _falseValues = new HashSet<string>(comparer) { "false", "no", "off", "disable", "0" };
             _iniRegex = new Regex(@"(?=\S)(?<text>(?<comment>(?<open>[#;]+)(?:[^\S\r\n]*)(?<value>.+))|" +
                                @"(?<section>(?<open>\[)(?:\s*)(?<value>[^\]]*\S+)(?:[^\S\r\n]*)(?<close>\]))|" +
-                               (allowMultiLine 
-                               ? @"(?<entry>(?<key>[^=\r\n\ [\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:\s*(?<value>\{(?:[^{}""]+|""(?:\\.|[^""])*""|(?<o>\{)|(?<-o>\}))*(?(o)(?!))\})|((?:[^\S\r\n]*)(?<value>[^#;\r\n]*))))|" 
+                               (allowMultiLine
+                               ? @"(?<entry>(?<key>[^=\r\n\ [\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:\s*(?<value>\{(?:[^{}""]+|""(?:\\.|[^""])*""|(?<o>\{)|(?<-o>\}))*(?(o)(?!))\})|((?:[^\S\r\n]*)(?<value>[^#;\r\n]*))))|"
                                : @"(?<entry>(?<key>[^=\r\n\ [\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:[^\S\r\n]*)(?<value>[^#;\r\n]*))|") +
                                @"(?<undefined>.+))(?<=\S)|" +
                                @"(?<linebreaker>\r\n|\n)|" +
@@ -532,7 +540,7 @@ namespace System.Ini
         {
             if (fileName == null)
                 throw new ArgumentNullException(nameof(fileName));
-            
+
             string filePath = GetFullPath(fileName);
             Encoding encoding = AutoDetectEncoding(filePath, Encoding.UTF8);
 
@@ -933,57 +941,57 @@ namespace System.Ini
             Match lastSection = null;    // Keep track of the last occurrence of the section.
             StringBuilder sb = new StringBuilder(_content);  // Create a StringBuilder to modify the ini content.
             int offset = 0; // Offset to account for changes in length during replacements.
-        
+
             // List to store all matches of the target key within the target section.
             List<Match> keyMatches = new List<Match>();
-        
+
             // Iterate over the ini content and process each match for section and entry
             for (int i = 0; i < _matches.Count; i++)
             {
                 Match match = _matches[i];
-        
+
                 if (match.Groups["section"].Success)  // Check if the current match is a section.
                 {
                     // Set the inSection flag based on whether the section matches the target section.
                     bool sectionMatch = match.Groups["value"].Value.Equals(section, _comparison);
                     if (sectionMatch)
                         lastSection = match;  // Remember only the matching section header.
-        
+
                     inSection = sectionMatch;
                     if (emptySection) break;  // If there is no section, break out of the loop.
                     continue;
                 }
-        
+
                 // Check if inside the correct section and the current match is an entry.
                 if (inSection && match.Groups["entry"].Success)
                 {
                     lastMatch = match;  // Remember the last entry in the section.
-        
+
                     // Check if the key matches.
                     if (match.Groups["key"].Value.Equals(key, _comparison))
                     {
                         keyMatches.Add(match);
-        
+
                         // If there are still values left, replace the current entry.
                         if (valueIndex < values.Length)
                         {
                             // Get the group representing the value.
                             Group group = match.Groups["value"];
-        
+
                             // Get the new value to insert.
                             string newValue = values[valueIndex++] ?? string.Empty;
                             string oldValue = group.Value;
-        
+
                             // Calculate the index considering previous modifications.
                             int index = group.Index + offset;
                             int length = group.Length;
-        
+
                             // Remove the old value and insert the new one.
                             sb.Remove(index, length);
                             if (_allowMultiLine && wrap) newValue = ToWrap(newValue);
                             if (_allowEscapeChars) newValue = ToEscape(newValue);
                             sb.Insert(index, newValue);
-        
+
                             // Update the offset for future replacements.
                             offset += newValue.Length - oldValue.Length;
                         }
@@ -991,10 +999,10 @@ namespace System.Ini
                     }
                 }
             }
-        
+
             // Determine the number of existing entries for the key.
             int existingCount = keyMatches.Count;
-        
+
             // If there are more existing entries than provided values, remove the excess.
             if (existingCount > values.Length)
             {
@@ -1012,7 +1020,7 @@ namespace System.Ini
             else if (existingCount < values.Length)
             {
                 int insertIndex;
-        
+
                 // If a last entry was found, insert after it.
                 if (lastMatch != null)
                 {
@@ -1035,20 +1043,20 @@ namespace System.Ini
                     // For global section (empty section name), insert at the end of the file.
                     insertIndex = sb.Length;
                 }
-        
+
                 // Insert the remaining values as new entries in the section.
                 while (valueIndex < values.Length)
                 {
                     string value = values[valueIndex++];
                     if (_allowMultiLine && wrap) value = ToWrap(value);
                     if (_allowEscapeChars) value = ToEscape(value);  // Escape characters if allowed.
-        
+
                     // Insert the new key-value pair into the content.
                     string line = $"{key}={value}";
                     InsertLine(sb, ref insertIndex, _lineBreaker, line);
                 }
             }
-        
+
             // Update the content with the modified StringBuilder content
             Content = sb.ToString();
         }
@@ -1057,8 +1065,10 @@ namespace System.Ini
 
         #region Internal JSON parsing and serialization methods
 
+        private const int MaxNestingDepth = 64;
+
         // Parses the string containing JSON data.
-        private dynamic ParseJson(string json)
+        private object ParseJson(string json)
         {
             var matches = _jsonRegex.Matches(json);
             int index = 0;
@@ -1066,7 +1076,19 @@ namespace System.Ini
             // Begin parsing JSON.
             try
             {
-                return ParseValue(matches, ref index);
+                if (!ParseValue(matches, ref index, 0, out object result))
+                    return null;
+
+                // Skip any remaining whitespace, comments, newlines
+                while (index < matches.Count)
+                {
+                    Match m = matches[index];
+                    if (!m.Groups["Comment"].Success && !m.Groups["whitespace"].Success && !m.Groups["newline"].Success)
+                        return null; // unexpected token after value
+                    index++;
+                }
+
+                return result;
             }
 
             // If empty string or syntax errors.
@@ -1076,11 +1098,52 @@ namespace System.Ini
             }
         }
 
-        // Parses the JSON value.
-        private dynamic ParseValue(MatchCollection matches, ref int index)
+        // Skips a nested JSON structure (object or array) without parsing.
+        private void SkipStructure(MatchCollection matches, ref int index)
         {
             if (index >= matches.Count)
-                return null;
+                return;
+
+            int nesting = 0;
+            bool started = false;
+
+            while (index < matches.Count)
+            {
+                Match m = matches[index];
+
+                // Skip comments, whitespace, newlines
+                if (m.Groups["Comment"].Success || m.Groups["whitespace"].Success || m.Groups["newline"].Success)
+                {
+                    index++;
+                    continue;
+                }
+
+                if (m.Groups["object_open"].Success || m.Groups["array_open"].Success)
+                {
+                    nesting++;
+                    started = true;
+                }
+                else if (m.Groups["object_close"].Success || m.Groups["array_close"].Success)
+                {
+                    nesting--;
+                    if (started && nesting == 0)
+                    {
+                        index++; // consume closing token
+                        break;
+                    }
+                }
+                // For any other token (strings, numbers, etc.) just skip
+                index++;
+            }
+        }
+
+        // Parses the JSON value.
+        private bool ParseValue(MatchCollection matches, ref int index, int depth, out object result)
+        {
+            result = null;
+
+            if (index >= matches.Count)
+                return false;
 
             Match m = matches[index];
 
@@ -1088,46 +1151,73 @@ namespace System.Ini
             while (m != null && (m.Groups["Comment"].Success || m.Groups["whitespace"].Success || m.Groups["newline"].Success))
             {
                 index++;
-                if (index >= matches.Count) return null;
+                if (index >= matches.Count) return false;
                 m = matches[index];
             }
 
             // Parse difference type of values.
 
             // Object { ... }
-            if (m.Groups["object_open"].Success) 
+            if (m.Groups["object_open"].Success)
             {
+                // Check depth limit before entering
+                if (depth + 1 >= MaxNestingDepth)
+                {
+                    SkipStructure(matches, ref index); // index currently at '{'
+                    result = null;
+                    return true; // truncated to null
+                }
+
                 index++;
-                return ParseObject(matches, ref index);
+                if (ParseObject(matches, ref index, depth + 1, out IDictionary<string, object> dict))
+                {
+                    result = dict;
+                    return true;
+                }
+                return false;
             }
 
             // Array [ ... ]
-            else if (m.Groups["array_open"].Success) 
+            else if (m.Groups["array_open"].Success)
             {
+                if (depth + 1 >= MaxNestingDepth)
+                {
+                    SkipStructure(matches, ref index);
+                    result = null;
+                    return true; // truncated to null
+                }
+
                 index++;
-                return ParseArray(matches, ref index);
+                if (ParseArray(matches, ref index, depth + 1, out object[] arr))
+                {
+                    result = arr;
+                    return true;
+                }
+                return false;
             }
 
             // Primitive value.
-            else if (m.Groups["value"].Success) 
+            else if (m.Groups["value"].Success)
             {
-                object val = ParsePrimitive(m);
+                if (!ParsePrimitive(m, out result))
+                    return false;
                 index++;
-                return val;
+                return true;
             }
 
             // Unexpected token.
             else
             {
-                
-                return null;
+                return false;
             }
         }
 
         // Parses an object (Dictionary) from JSON.
-        private dynamic ParseObject(MatchCollection matches, ref int index)
+        private bool ParseObject(MatchCollection matches, ref int index, int depth, out IDictionary<string, object> result)
         {
-            var dict = new ExpandoObject() as IDictionary<string, object>;
+            result = null;
+
+            var dict = new Dictionary<string, object>();
             bool first = true;
 
             while (index < matches.Count)
@@ -1138,7 +1228,7 @@ namespace System.Ini
                 while (m != null && (m.Groups["Comment"].Success || m.Groups["whitespace"].Success || m.Groups["newline"].Success))
                 {
                     index++;
-                    if (index >= matches.Count) return null;
+                    if (index >= matches.Count) return false;
                     m = matches[index];
                 }
 
@@ -1146,14 +1236,15 @@ namespace System.Ini
                 if (m.Groups["object_close"].Success)
                 {
                     index++;
-                    return dict;
+                    result = dict;
+                    return true;
                 }
 
                 if (first)
                 {
                     // Expect key.
                     if (!m.Groups["key"].Success)
-                        return null;
+                        return false;
                     first = false;
                 }
                 else
@@ -1166,30 +1257,32 @@ namespace System.Ini
                         while (index < matches.Count && (matches[index].Groups["Comment"].Success ||
                                matches[index].Groups["whitespace"].Success || matches[index].Groups["newline"].Success))
                             index++;
-                        if (index >= matches.Count) return null;
+                        if (index >= matches.Count) return false;
                         m = matches[index];
 
                         // Trailing comma, skip to close...
                         if (m.Groups["object_close"].Success)
                         {
                             index++;
-                            return dict;
+                            result = dict;
+                            return true;
                         }
 
                         // ...else expect key.
                         if (!m.Groups["key"].Success)
-                            return null;
+                            return false;
                     }
 
                     // End of the object.
                     else if (m.Groups["object_close"].Success)
                     {
                         index++;
-                        return dict;
+                        result = dict;
+                        return true;
                     }
                     else
                     {
-                        return null; // Unexpected token.
+                        return false; // Unexpected token.
                     }
                 }
 
@@ -1201,24 +1294,28 @@ namespace System.Ini
                 while (index < matches.Count && (matches[index].Groups["Comment"].Success ||
                        matches[index].Groups["whitespace"].Success || matches[index].Groups["newline"].Success))
                     index++;
-                if (index >= matches.Count) return null;
+                if (index >= matches.Count) return false;
                 m = matches[index];
 
                 // Expect delimiter.
                 if (!m.Groups["value_sep"].Success)
-                    return null;
+                    return false;
                 index++;
 
-                // Parse value.
-                object val = ParseValue(matches, ref index);
+                // Parse value (value is at the same depth, no increase)
+                if (!ParseValue(matches, ref index, depth, out object val))
+                    return false;
+
                 dict[key] = val;
             }
-            return null;
+            return false;
         }
 
         // Parses an array from JSON.
-        private dynamic ParseArray(MatchCollection matches, ref int index)
+        private bool ParseArray(MatchCollection matches, ref int index, int depth, out object[] result)
         {
+            result = null;
+
             List<object> list = new List<object>();
 
             // Indicates whether the next element is the first one in the array.
@@ -1233,7 +1330,7 @@ namespace System.Ini
                 while (m != null && (m.Groups["Comment"].Success || m.Groups["whitespace"].Success || m.Groups["newline"].Success))
                 {
                     index++;
-                    if (index >= matches.Count) return null;
+                    if (index >= matches.Count) return false;
                     m = matches[index];
                 }
 
@@ -1241,7 +1338,8 @@ namespace System.Ini
                 if (m.Groups["array_close"].Success)
                 {
                     index++;
-                    return list.ToArray();
+                    result = list.ToArray();
+                    return true;
                 }
 
                 // The first element can appear immediately after '['.
@@ -1259,49 +1357,61 @@ namespace System.Ini
                         while (index < matches.Count && (matches[index].Groups["Comment"].Success ||
                                matches[index].Groups["whitespace"].Success || matches[index].Groups["newline"].Success))
                             index++;
-                        if (index >= matches.Count) return null;
+                        if (index >= matches.Count) return false;
                         m = matches[index];
 
                         // Trailing comma, skip to close.
                         if (m.Groups["array_close"].Success)
                         {
                             index++;
-                            return list.ToArray();
+                            result = list.ToArray();
+                            return true;
                         }
 
-                    // ...else parse value
+                        // ...else parse value
                     }
                     else if (m.Groups["array_close"].Success)
                     {
                         index++;
-                        return list.ToArray();
+                        result = list.ToArray();
+                        return true;
                     }
                     else
                     {
-                        return null; // Unexpected token.
+                        return false; // Unexpected token.
                     }
                 }
 
-                // Parse value.
-                object val = ParseValue(matches, ref index);
+                // Parse value (value is at the same depth, no increase)
+                if (!ParseValue(matches, ref index, depth, out object val))
+                    return false;
+
                 list.Add(val);
             }
-            return null;
+            return false;
         }
 
         // Parses primitive values from JSON.
-        private object ParsePrimitive(Match match)
+        private bool ParsePrimitive(Match match, out object result)
         {
+            result = null;
+
             // Null.
             if (match.Groups["null"].Success)
-                return null;
+            {
+                result = null;
+                return true;
+            }
 
             // Boolean.
             if (match.Groups["bool"].Success)
             {
-                return bool.TryParse(match.Groups["bool"].Value, out bool value)
-                    ? (object)value
-                    : null;
+                if (bool.TryParse(match.Groups["bool"].Value, out bool value))
+                {
+                    result = value;
+                    return true;
+                }
+                return false;
             }
 
             // String.
@@ -1309,26 +1419,30 @@ namespace System.Ini
             {
                 string value = match.Groups["string"].Value;
                 if (_allowEscapeChars) value = UnEscape(value);
-                return value;
+                result = value;
+                return true;
             }
 
             // Number.
             if (match.Groups["number"].Success)
             {
-                return double.TryParse(
+                if (double.TryParse(
                     match.Groups["number"].Value,
                     NumberStyles.Float,
                     _culture,
-                    out double value)
-                    ? (object)value
-                    : null;
+                    out double value))
+                {
+                    result = value;
+                    return true;
+                }
+                return false;
             }
 
-            return null; // Unknown token.
+            return false; // Unknown token.
         }
 
-        // Serializes a dynamic object to a JSON string.
-        // Supports ExpandoObject, IDictionary<string, object>, IEnumerable (non-string), and primitives.
+        // Serializes an object to a JSON string.
+        // Supports IDictionary<string, object>, IEnumerable (non-string), and primitives.
         private string SerializeJson(object value, bool beautify = false)
         {
             var sb = new StringBuilder();
@@ -1337,8 +1451,15 @@ namespace System.Ini
         }
 
         // Serializes a regular value to JSON format.
-        private void SerializeValue(object value, StringBuilder sb, bool beautify, int indentLevel)
+        private void SerializeValue(object value, StringBuilder sb, bool beautify, int depth)
         {
+            // Depth limit check
+            if (depth >= MaxNestingDepth)
+            {
+                sb.Append("null");
+                return;
+            }
+
             // Null.
             if (value == null)
             {
@@ -1374,17 +1495,17 @@ namespace System.Ini
                 return;
             }
 
-            // Object (IDictionary<string, object> or ExpandoObject).
+            // Object (IDictionary<string, object>).
             if (value is IDictionary<string, object> dict)
             {
-                SerializeObject(dict, sb, beautify, indentLevel);
+                SerializeObject(dict, sb, beautify, depth + 1);
                 return;
             }
 
             // Array or enumerable (except string).
             if (value is IEnumerable enumerable && !(value is string))
             {
-                SerializeArray(enumerable, sb, beautify, indentLevel);
+                SerializeArray(enumerable, sb, beautify, depth + 1);
                 return;
             }
 
@@ -1395,8 +1516,14 @@ namespace System.Ini
         }
 
         // Serializes a dictionary (object) to JSON format.
-        private void SerializeObject(IDictionary<string, object> dict, StringBuilder sb, bool beautify, int indentLevel)
+        private void SerializeObject(IDictionary<string, object> dict, StringBuilder sb, bool beautify, int depth)
         {
+            if (depth >= MaxNestingDepth)
+            {
+                sb.Append("null");
+                return;
+            }
+
             // Open object.
             sb.Append('{');
 
@@ -1414,7 +1541,7 @@ namespace System.Ini
                 if (beautify)
                 {
                     // Start each element on a new indented line.
-                    sb.Append('\n').Append(' ', (indentLevel + 1) * 2);
+                    sb.Append('\n').Append(' ', (depth) * 2);
                 }
                 else if (!first)
                 {
@@ -1430,20 +1557,26 @@ namespace System.Ini
                 sb.Append('"').Append(key).Append('"').Append(':');
 
                 // Append a value.
-                SerializeValue(kvp.Value, sb, beautify, indentLevel + 1);
+                SerializeValue(kvp.Value, sb, beautify, depth + 1);
             }
 
             // Append indents.
             if (beautify && dict.Count > 0)
-                sb.Append('\n').Append(' ', indentLevel * 2);
+                sb.Append('\n').Append(' ', (depth - 1) * 2);
 
             // Close object.
             sb.Append('}');
         }
 
         // Serializes an enumerable (array) to JSON format.
-        private void SerializeArray(IEnumerable enumerable, StringBuilder sb, bool beautify, int indentLevel)
+        private void SerializeArray(IEnumerable enumerable, StringBuilder sb, bool beautify, int depth)
         {
+            if (depth >= MaxNestingDepth)
+            {
+                sb.Append("null");
+                return;
+            }
+
             // Open array.
             sb.Append('[');
 
@@ -1460,7 +1593,7 @@ namespace System.Ini
                 // Append indents.
                 if (beautify)
                 {
-                    sb.Append('\n').Append(' ', (indentLevel + 1) * 2);
+                    sb.Append('\n').Append(' ', depth * 2);
                 }
                 else if (!first)
                 {
@@ -1471,12 +1604,12 @@ namespace System.Ini
                 first = false;
 
                 // Append a value.
-                SerializeValue(item, sb, beautify, indentLevel + 1);
+                SerializeValue(item, sb, beautify, depth + 1);
             }
 
             // Align the closing bracket with the opening one.
             if (beautify && !first)
-                sb.Append('\n').Append(' ', indentLevel * 2);
+                sb.Append('\n').Append(' ', (depth - 1) * 2);
 
             // Close array.
             sb.Append(']');
@@ -1502,23 +1635,23 @@ namespace System.Ini
                 options |= RegexOptions.IgnoreCase;
             else
                 options &= ~RegexOptions.IgnoreCase;
-        
+
             // Higher bits indicate the comparison type.
             switch (((int)comparison) >> 1)
             {
                 case 0: // CurrentCulture
                     options &= ~RegexOptions.CultureInvariant;
                     break;
-        
+
                 case 1: // InvariantCulture
                     options |= RegexOptions.CultureInvariant;
                     break;
-        
+
                 case 2: // Ordinal
                     options &= ~RegexOptions.CultureInvariant;
                     break;
             }
-        
+
             return options;
         }
 
@@ -1724,7 +1857,7 @@ namespace System.Ini
                     return "{" + value + "}";
                 }
             }
-                    
+
             return value;
         }
 
@@ -1792,7 +1925,6 @@ namespace System.Ini
         }
 
         // Converts a single hexadecimal character (0-9, A-F, a-f) to its integer value.
-        /// </summary>
         private static int ParseHexDigit(char c)
         {
             if (c >= '0' && c <= '9')
@@ -2131,9 +2263,6 @@ namespace System.Ini
             return text;
         }
 
-        // Array containing the characters that are not allowed in path names.
-        private static readonly char[] InvalidPathChars = Path.GetInvalidPathChars();
-
         // Checks whether the fileName string contains invalid characters for the path.
         private static bool IsInvalidPath(string fileName)
         {
@@ -2142,7 +2271,7 @@ namespace System.Ini
 
         private static bool InvalidPathChar(char c)
         {
-            return InvalidPathChars.Contains(c);
+            return _invalidPathChars.Contains(c);
         }
 
         // Checks whether the file name is correct and, if necessary, whether the file exists.
@@ -2194,6 +2323,48 @@ namespace System.Ini
         public override string ToString()
         {
             return Content;
+        }
+
+        /// <summary>
+        /// Reads or writes the value associated with the specified section and key to the ini file.
+        /// </summary>
+        /// <param name="section">
+        /// Section name. Pass null to get global entries above all sections.
+        /// </param>
+        /// <param name="key">
+        /// Key name.
+        /// </param>
+        /// <returns>
+        /// The value associated with the specified section and key.
+        /// If the specified entry is not found, attempting to get it returns the empty string,
+        /// and attempting to set it creates a new entry using the specified name.
+        /// </returns>
+        public string this[string section, string key]
+        {
+            get => ReadString(section, key, string.Empty);
+            set => WriteString(section, key, value);
+        }
+
+        /// <summary>
+        /// Reads or writes the value associated with the specified name.
+        /// </summary>
+        /// <param name="section">
+        /// Section name. Pass null to get global entries above all sections.
+        /// </param>
+        /// <param name="key">
+        /// Key name.
+        /// </param>
+        /// <param name="defaultValue">
+        /// The value to be returned if the specified entry is not found.
+        /// </param>
+        /// <returns>
+        /// The value associated with the specified name.
+        /// If the specified entry is not found, attempting to get it returns the <paramref name="defaultValue"/>,
+        /// and attempting to set it creates a new entry using the specified name.
+        /// </returns>
+        public string this[string section, string key, string defaultValue]
+        {
+            get => ReadString(section, key, defaultValue);
         }
 
         #endregion
@@ -2440,7 +2611,7 @@ namespace System.Ini
             if (key == null)
                 throw new ArgumentNullException(nameof(key));
 
-            string json = GetValue(section, key, null ,false);
+            string json = GetValue(section, key, null, false);
             if (json == null)
                 return defaultValue;
 
@@ -2570,9 +2741,10 @@ namespace System.Ini
                 if (tmpConv.CanConvertFrom(typeof(string)))
                     try
                     {
-                        array.SetValue(tmpConv.ConvertFromString(null, _culture, value), i);
+                        var item = tmpConv.ConvertFromString(null, _culture, value);
+                        array.SetValue(item, i);
                     }
-                    catch (Exception e)
+                    catch
                     {
                         continue; // If conversion fails just skip iteration. 
                     }
@@ -2739,6 +2911,354 @@ namespace System.Ini
             return (T[])ReadArray(section, key, typeof(T), converter);
         }
 
+        /// <summary>
+        /// Reads a boolean value associated with the specified section and key from the INI file.
+        /// </summary>
+        /// <param name="section">
+        /// Section name. Pass null to get global entries above all sections.
+        /// </param>
+        /// <param name="key">
+        /// Key name.
+        /// </param>
+        /// <param name="defaultValue">
+        /// The value to be returned if the specified entry is not found.
+        /// </param>
+        /// <returns>
+        /// Read value.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when parameter <paramref name="key"/> is null.
+        /// </exception>
+        public bool ReadBoolean(string section, string key, bool defaultValue = default)
+        {
+            string value = ReadString(section, key, null);
+            if (value == null)
+                return defaultValue;
+
+            // Try to parse as integer (decimal) with no hex specifier.
+            if (int.TryParse(value, NumberStyles.Integer, _culture, out int number))
+                return number != 0;
+
+            // Try to parse as hex number (allow "0x" prefix manually).
+            string hexValue = value.Trim();
+            if (hexValue.StartsWith("0x") || hexValue.StartsWith("0X"))
+                hexValue = hexValue.Substring(2);
+            if (int.TryParse(hexValue, NumberStyles.HexNumber, _culture, out int hexNumber))
+                return hexNumber != 0;
+
+            // Try to parse by sets of true/false values.
+            if (_trueValues.Contains(value))
+                return true;
+            if (_falseValues.Contains(value))
+                return false;
+
+            return defaultValue;
+        }
+
+        /// <summary>
+        /// Reads a character associated with the specified section and key from the INI file.
+        /// </summary>
+        /// <param name="section">
+        /// Section name. Pass null to get global entries above all sections.
+        /// </param>
+        /// <param name="key">
+        /// Key name.
+        /// </param>
+        /// <param name="defaultValue">
+        /// The value to be returned if the specified entry is not found.
+        /// </param>
+        /// <returns>
+        /// Read value.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when parameter <paramref name="key"/> is null.
+        /// </exception>
+        public char ReadChar(string section, string key, char defaultValue = default)
+        {
+            string value = ReadString(section, key, null);
+            if (string.IsNullOrEmpty(value))
+                return defaultValue;
+            return value[0];
+        }
+
+        /// <summary>
+        /// Reads a signed byte associated with the specified section and key from the INI file.
+        /// </summary>
+        /// <param name="section">
+        /// Section name. Pass null to get global entries above all sections.
+        /// </param>
+        /// <param name="key">
+        /// Key name.
+        /// </param>
+        /// <param name="defaultValue">
+        /// The value to be returned if the specified entry is not found.
+        /// </param>
+        /// <returns>
+        /// Read value.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when parameter <paramref name="key"/> is null.
+        /// </exception>
+        public sbyte ReadSByte(string section, string key, sbyte defaultValue = default)
+        {
+            return Read(section, key, defaultValue);
+        }
+
+        /// <summary>
+        /// Reads an unsigned byte associated with the specified section and key from the INI file.
+        /// </summary>
+        /// <param name="section">
+        /// Section name. Pass null to get global entries above all sections.
+        /// </param>
+        /// <param name="key">
+        /// Key name.
+        /// </param>
+        /// <param name="defaultValue">
+        /// The value to be returned if the specified entry is not found.
+        /// </param>
+        /// <returns>
+        /// Read value.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when parameter <paramref name="key"/> is null.
+        /// </exception>
+        public byte ReadByte(string section, string key, byte defaultValue = default)
+        {
+            return Read(section, key, defaultValue);
+        }
+
+        /// <summary>
+        /// Reads a 16-bit integer associated with the specified section and key from the INI file.
+        /// </summary>
+        /// <param name="section">
+        /// Section name. Pass null to get global entries above all sections.
+        /// </param>
+        /// <param name="key">
+        /// Key name.
+        /// </param>
+        /// <param name="defaultValue">
+        /// The value to be returned if the specified entry is not found.
+        /// </param>
+        /// <returns>
+        /// Read value.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when parameter <paramref name="key"/> is null.
+        /// </exception>
+        public short ReadInt16(string section, string key, short defaultValue = default)
+        {
+            return Read(section, key, defaultValue);
+        }
+
+        /// <summary>
+        /// Reads an unsigned 16-bit integer associated with the specified section and key from the INI file.
+        /// </summary>
+        /// <param name="section">
+        /// Section name. Pass null to get global entries above all sections.
+        /// </param>
+        /// <param name="key">
+        /// Key name.
+        /// </param>
+        /// <param name="defaultValue">
+        /// The value to be returned if the specified entry is not found.
+        /// </param>
+        /// <returns>
+        /// Read value.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when parameter <paramref name="key"/> is null.
+        /// </exception>
+        public ushort ReadUInt16(string section, string key, ushort defaultValue = default)
+        {
+            return Read(section, key, defaultValue);
+        }
+
+        /// <summary>
+        /// Reads a 32-bit integer associated with the specified section and key from the INI file.
+        /// </summary>
+        /// <param name="section">
+        /// Section name. Pass null to get global entries above all sections.
+        /// </param>
+        /// <param name="key">
+        /// Key name.
+        /// </param>
+        /// <param name="defaultValue">
+        /// The value to be returned if the specified entry is not found.
+        /// </param>
+        /// <returns>
+        /// Read value.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when parameter <paramref name="key"/> is null.
+        /// </exception>
+        public int ReadInt32(string section, string key, int defaultValue = default)
+        {
+            return Read(section, key, defaultValue);
+        }
+
+        /// <summary>
+        /// Reads an unsigned 32-bit integer associated with the specified section and key from the INI file.
+        /// </summary>
+        /// <param name="section">
+        /// Section name. Pass null to get global entries above all sections.
+        /// </param>
+        /// <param name="key">
+        /// Key name.
+        /// </param>
+        /// <param name="defaultValue">
+        /// The value to be returned if the specified entry is not found.
+        /// </param>
+        /// <returns>
+        /// Read value.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when parameter <paramref name="key"/> is null.
+        /// </exception>
+        public uint ReadUInt32(string section, string key, uint defaultValue = default)
+        {
+            return Read(section, key, defaultValue);
+        }
+
+        /// <summary>
+        /// Reads a 64-bit integer associated with the specified section and key from the INI file.
+        /// </summary>
+        /// <param name="section">
+        /// Section name. Pass null to get global entries above all sections.
+        /// </param>
+        /// <param name="key">
+        /// Key name.
+        /// </param>
+        /// <param name="defaultValue">
+        /// The value to be returned if the specified entry is not found.
+        /// </param>
+        /// <returns>
+        /// Read value.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when parameter <paramref name="key"/> is null.
+        /// </exception>
+        public long ReadInt64(string section, string key, long defaultValue = default)
+        {
+            return Read(section, key, defaultValue);
+        }
+
+        /// <summary>
+        /// Reads an unsigned 64-bit integer associated with the specified section and key from the INI file.
+        /// </summary>
+        /// <param name="section">
+        /// Section name. Pass null to get global entries above all sections.
+        /// </param>
+        /// <param name="key">
+        /// Key name.
+        /// </param>
+        /// <param name="defaultValue">
+        /// The value to be returned if the specified entry is not found.
+        /// </param>
+        /// <returns>
+        /// Read value.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when parameter <paramref name="key"/> is null.
+        /// </exception>
+        public ulong ReadUInt64(string section, string key, ulong defaultValue = default)
+        {
+            return Read(section, key, defaultValue);
+        }
+
+        /// <summary>
+        /// Reads a 32-bit floating point value associated with the specified section and key from the INI file.
+        /// </summary>
+        /// <param name="section">
+        /// Section name. Pass null to get global entries above all sections.
+        /// </param>
+        /// <param name="key">
+        /// Key name.
+        /// </param>
+        /// <param name="defaultValue">
+        /// The value to be returned if the specified entry is not found.
+        /// </param>
+        /// <returns>
+        /// Read value.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when parameter <paramref name="key"/> is null.
+        /// </exception>
+        public float ReadSingle(string section, string key, float defaultValue = default)
+        {
+            return Read(section, key, defaultValue);
+        }
+
+        /// <summary>
+        /// Reads a 64-bit floating point value associated with the specified section and key from the INI file.
+        /// </summary>
+        /// <param name="section">
+        /// Section name. Pass null to get global entries above all sections.
+        /// </param>
+        /// <param name="key">
+        /// Key name.
+        /// </param>
+        /// <param name="defaultValue">
+        /// The value to be returned if the specified entry is not found.
+        /// </param>
+        /// <returns>
+        /// Read value.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when parameter <paramref name="key"/> is null.
+        /// </exception>
+        public double ReadDouble(string section, string key, double defaultValue = default)
+        {
+            return Read(section, key, defaultValue);
+        }
+
+        /// <summary>
+        /// Reads a decimal value associated with the specified section and key from the INI file.
+        /// </summary>
+        /// <param name="section">
+        /// Section name. Pass null to get global entries above all sections.
+        /// </param>
+        /// <param name="key">
+        /// Key name.
+        /// </param>
+        /// <param name="defaultValue">
+        /// The value to be returned if the specified entry is not found.
+        /// </param>
+        /// <returns>
+        /// Read value.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when parameter <paramref name="key"/> is null.
+        /// </exception>
+        public decimal ReadDecimal(string section, string key, decimal defaultValue = default)
+        {
+            return Read(section, key, defaultValue);
+        }
+
+        /// <summary>
+        /// Reads a <see cref="DateTime"/> value associated with the specified section and key from the INI file.
+        /// </summary>
+        /// <param name="section">
+        /// Section name. Pass null to get global entries above all sections.
+        /// </param>
+        /// <param name="key">
+        /// Key name.
+        /// </param>
+        /// <param name="defaultValue">
+        /// The value to be returned if the specified entry is not found.
+        /// </param>
+        /// <returns>
+        /// Read value.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when parameter <paramref name="key"/> is null.
+        /// </exception>
+        public DateTime ReadDateTime(string section, string key, DateTime defaultValue = default)
+        {
+            return Read(section, key, defaultValue);
+        }
+
+
+
         #endregion
 
         #region Public write methods
@@ -2759,10 +3279,10 @@ namespace System.Ini
         {
             if (key == null)
                 throw new ArgumentNullException(nameof(key));
-            
+
             SetValue(section, key, null);
         }
-        
+
         /// <summary>
         /// Removes all occurrences of the specified key in the given section from the INI file.
         /// </summary>
@@ -2779,7 +3299,7 @@ namespace System.Ini
         {
             if (key == null)
                 throw new ArgumentNullException(nameof(key));
-            
+
             SetValues(section, key); // empty params array removes all matching  entries.
         }
 
@@ -2805,7 +3325,7 @@ namespace System.Ini
                         break;
                     }
                 }
-            
+
                 if (firstSectionIndex < 0)
                 {
                     // No sections at all – delete everything.
@@ -2814,7 +3334,7 @@ namespace System.Ini
                 else
                 {
                     // Remove all characters from the beginning up to the first section
-                    
+
                     sb.Remove(0, firstSectionIndex);
                     Content = sb.ToString();
                 }
@@ -2824,11 +3344,11 @@ namespace System.Ini
             // For named sections.
             List<long> ranges = new List<long>(); // Packed ranges.
             int currentStart = -1; // Tracks the currently matched section.
-        
+
             for (int i = 0; i < _matches.Count; i++)
             {
                 Match match = _matches[i];
-        
+
                 if (match.Groups["section"].Success)
                 {
                     // Close previous range if any.
@@ -2839,21 +3359,21 @@ namespace System.Ini
                         ranges.Add(((long)currentStart << 32) | currentEnd);
                         currentStart = -1;
                     }
-        
+
                     // Start new range if section matches.
                     if (match.Groups["value"].Value.Equals(section, _comparison))
                         currentStart = match.Index;
                 }
                 // Entries are ignored – they're inside section ranges.
             }
-        
+
             // Close last range if it extends to the end.
             if (currentStart >= 0)
                 ranges.Add(((long)currentStart << 32) | (uint)_content.Length);
-        
+
             if (ranges.Count == 0)
                 return;
-        
+
             // Remove from the end to preserve indices of remaining ranges.
             for (int i = ranges.Count - 1; i >= 0; i--)
             {
@@ -2863,7 +3383,7 @@ namespace System.Ini
                 int end = unchecked((int)packed);
                 sb.Remove(start, end - start);
             }
-        
+
             Content = sb.ToString();
         }
 
@@ -3347,394 +3867,6 @@ namespace System.Ini
             {
                 WriteProperty(property, obj);
             }
-        }
-
-        /// <summary>
-        /// Reads or writes the value associated with the specified section and key to the ini file.
-        /// </summary>
-        /// <param name="section">
-        /// Section name. Pass null to get global entries above all sections.
-        /// </param>
-        /// <param name="key">
-        /// Key name.
-        /// </param>
-        /// <returns>
-        /// The value associated with the specified section and key.
-        /// If the specified entry is not found, attempting to get it returns the empty string,
-        /// and attempting to set it creates a new entry using the specified name.
-        /// </returns>
-        public string this[string section, string key]
-        {
-            get => ReadString(section, key, string.Empty);
-            set => WriteString(section, key, value);
-        }
-
-        /// <summary>
-        /// Reads or writes the value associated with the specified name.
-        /// </summary>
-        /// <param name="section">
-        /// Section name. Pass null to get global entries above all sections.
-        /// </param>
-        /// <param name="key">
-        /// Key name.
-        /// </param>
-        /// <param name="defaultValue">
-        /// The value to be returned if the specified entry is not found.
-        /// </param>
-        /// <returns>
-        /// The value associated with the specified name.
-        /// If the specified entry is not found, attempting to get it returns the <paramref name="defaultValue"/>,
-        /// and attempting to set it creates a new entry using the specified name.
-        /// </returns>
-        public string this[string section, string key, string defaultValue]
-        {
-            get => ReadString(section, key, defaultValue);
-        }
-
-        /// <summary>
-        /// Reads a boolean value associated with the specified section and key from the INI file.
-        /// </summary>
-        /// <param name="section">
-        /// Section name. Pass null to get global entries above all sections.
-        /// </param>
-        /// <param name="key">
-        /// Key name.
-        /// </param>
-        /// <param name="defaultValue">
-        /// The value to be returned if the specified entry is not found.
-        /// </param>
-        /// <returns>
-        /// Read value.
-        /// </returns>
-        /// <exception cref="ArgumentNullException">
-        /// Thrown when parameter <paramref name="key"/> is null.
-        /// </exception>
-        public bool ReadBoolean(string section, string key, bool defaultValue = default)
-        {
-            string value = ReadString(section, key, null);
-            if (value == null)
-                return defaultValue;
-
-            // Try to parse as integer (decimal) with no hex specifier.
-            if (int.TryParse(value, NumberStyles.Integer, _culture, out int number))
-                return number != 0;
-
-            // Try to parse as hex number (allow "0x" prefix manually).
-            string hexValue = value.Trim();
-            if (hexValue.StartsWith("0x") || hexValue.StartsWith("0X"))
-                hexValue = hexValue.Substring(2);
-            if (int.TryParse(hexValue, NumberStyles.HexNumber, _culture, out int hexNumber))
-                return hexNumber != 0;
-
-            // Try to parse by sets of true/false values.
-            if (_trueValues.Contains(value))
-                return true;
-            if (_falseValues.Contains(value))
-                return false;
-
-            return defaultValue;
-        }
-
-        /// <summary>
-        /// Reads a character associated with the specified section and key from the INI file.
-        /// </summary>
-        /// <param name="section">
-        /// Section name. Pass null to get global entries above all sections.
-        /// </param>
-        /// <param name="key">
-        /// Key name.
-        /// </param>
-        /// <param name="defaultValue">
-        /// The value to be returned if the specified entry is not found.
-        /// </param>
-        /// <returns>
-        /// Read value.
-        /// </returns>
-        /// <exception cref="ArgumentNullException">
-        /// Thrown when parameter <paramref name="key"/> is null.
-        /// </exception>
-        public char ReadChar(string section, string key, char defaultValue = default)
-        {
-            string value = ReadString(section, key, null);
-            if (string.IsNullOrEmpty(value))
-                return defaultValue;
-            return value[0];
-        }
-
-        /// <summary>
-        /// Reads a signed byte associated with the specified section and key from the INI file.
-        /// </summary>
-        /// <param name="section">
-        /// Section name. Pass null to get global entries above all sections.
-        /// </param>
-        /// <param name="key">
-        /// Key name.
-        /// </param>
-        /// <param name="defaultValue">
-        /// The value to be returned if the specified entry is not found.
-        /// </param>
-        /// <returns>
-        /// Read value.
-        /// </returns>
-        /// <exception cref="ArgumentNullException">
-        /// Thrown when parameter <paramref name="key"/> is null.
-        /// </exception>
-        public sbyte ReadSByte(string section, string key, sbyte defaultValue = default)
-        {
-            return Read(section, key, defaultValue);
-        }
-
-        /// <summary>
-        /// Reads an unsigned byte associated with the specified section and key from the INI file.
-        /// </summary>
-        /// <param name="section">
-        /// Section name. Pass null to get global entries above all sections.
-        /// </param>
-        /// <param name="key">
-        /// Key name.
-        /// </param>
-        /// <param name="defaultValue">
-        /// The value to be returned if the specified entry is not found.
-        /// </param>
-        /// <returns>
-        /// Read value.
-        /// </returns>
-        /// <exception cref="ArgumentNullException">
-        /// Thrown when parameter <paramref name="key"/> is null.
-        /// </exception>
-        public byte ReadByte(string section, string key, byte defaultValue = default)
-        {
-            return Read(section, key, defaultValue);
-        }
-
-        /// <summary>
-        /// Reads a 16-bit integer associated with the specified section and key from the INI file.
-        /// </summary>
-        /// <param name="section">
-        /// Section name. Pass null to get global entries above all sections.
-        /// </param>
-        /// <param name="key">
-        /// Key name.
-        /// </param>
-        /// <param name="defaultValue">
-        /// The value to be returned if the specified entry is not found.
-        /// </param>
-        /// <returns>
-        /// Read value.
-        /// </returns>
-        /// <exception cref="ArgumentNullException">
-        /// Thrown when parameter <paramref name="key"/> is null.
-        /// </exception>
-        public short ReadInt16(string section, string key, short defaultValue = default)
-        {
-            return Read(section, key, defaultValue);
-        }
-
-        /// <summary>
-        /// Reads an unsigned 16-bit integer associated with the specified section and key from the INI file.
-        /// </summary>
-        /// <param name="section">
-        /// Section name. Pass null to get global entries above all sections.
-        /// </param>
-        /// <param name="key">
-        /// Key name.
-        /// </param>
-        /// <param name="defaultValue">
-        /// The value to be returned if the specified entry is not found.
-        /// </param>
-        /// <returns>
-        /// Read value.
-        /// </returns>
-        /// <exception cref="ArgumentNullException">
-        /// Thrown when parameter <paramref name="key"/> is null.
-        /// </exception>
-        public ushort ReadUInt16(string section, string key, ushort defaultValue = default)
-        {
-            return Read(section, key, defaultValue);
-        }
-
-        /// <summary>
-        /// Reads a 32-bit integer associated with the specified section and key from the INI file.
-        /// </summary>
-        /// <param name="section">
-        /// Section name. Pass null to get global entries above all sections.
-        /// </param>
-        /// <param name="key">
-        /// Key name.
-        /// </param>
-        /// <param name="defaultValue">
-        /// The value to be returned if the specified entry is not found.
-        /// </param>
-        /// <returns>
-        /// Read value.
-        /// </returns>
-        /// <exception cref="ArgumentNullException">
-        /// Thrown when parameter <paramref name="key"/> is null.
-        /// </exception>
-        public int ReadInt32(string section, string key, int defaultValue = default)
-        {
-            return Read(section, key, defaultValue);
-        }
-
-        /// <summary>
-        /// Reads an unsigned 32-bit integer associated with the specified section and key from the INI file.
-        /// </summary>
-        /// <param name="section">
-        /// Section name. Pass null to get global entries above all sections.
-        /// </param>
-        /// <param name="key">
-        /// Key name.
-        /// </param>
-        /// <param name="defaultValue">
-        /// The value to be returned if the specified entry is not found.
-        /// </param>
-        /// <returns>
-        /// Read value.
-        /// </returns>
-        /// <exception cref="ArgumentNullException">
-        /// Thrown when parameter <paramref name="key"/> is null.
-        /// </exception>
-        public uint ReadUInt32(string section, string key, uint defaultValue = default)
-        {
-            return Read(section, key, defaultValue);
-        }
-
-        /// <summary>
-        /// Reads a 64-bit integer associated with the specified section and key from the INI file.
-        /// </summary>
-        /// <param name="section">
-        /// Section name. Pass null to get global entries above all sections.
-        /// </param>
-        /// <param name="key">
-        /// Key name.
-        /// </param>
-        /// <param name="defaultValue">
-        /// The value to be returned if the specified entry is not found.
-        /// </param>
-        /// <returns>
-        /// Read value.
-        /// </returns>
-        /// <exception cref="ArgumentNullException">
-        /// Thrown when parameter <paramref name="key"/> is null.
-        /// </exception>
-        public long ReadInt64(string section, string key, long defaultValue = default)
-        {
-            return Read(section, key, defaultValue);
-        }
-
-        /// <summary>
-        /// Reads an unsigned 64-bit integer associated with the specified section and key from the INI file.
-        /// </summary>
-        /// <param name="section">
-        /// Section name. Pass null to get global entries above all sections.
-        /// </param>
-        /// <param name="key">
-        /// Key name.
-        /// </param>
-        /// <param name="defaultValue">
-        /// The value to be returned if the specified entry is not found.
-        /// </param>
-        /// <returns>
-        /// Read value.
-        /// </returns>
-        /// <exception cref="ArgumentNullException">
-        /// Thrown when parameter <paramref name="key"/> is null.
-        /// </exception>
-        public ulong ReadUInt64(string section, string key, ulong defaultValue = default)
-        {
-            return Read(section, key, defaultValue);
-        }
-
-        /// <summary>
-        /// Reads a 32-bit floating point value associated with the specified section and key from the INI file.
-        /// </summary>
-        /// <param name="section">
-        /// Section name. Pass null to get global entries above all sections.
-        /// </param>
-        /// <param name="key">
-        /// Key name.
-        /// </param>
-        /// <param name="defaultValue">
-        /// The value to be returned if the specified entry is not found.
-        /// </param>
-        /// <returns>
-        /// Read value.
-        /// </returns>
-        /// <exception cref="ArgumentNullException">
-        /// Thrown when parameter <paramref name="key"/> is null.
-        /// </exception>
-        public float ReadSingle(string section, string key, float defaultValue = default)
-        {
-            return Read(section, key, defaultValue);
-        }
-
-        /// <summary>
-        /// Reads a 64-bit floating point value associated with the specified section and key from the INI file.
-        /// </summary>
-        /// <param name="section">
-        /// Section name. Pass null to get global entries above all sections.
-        /// </param>
-        /// <param name="key">
-        /// Key name.
-        /// </param>
-        /// <param name="defaultValue">
-        /// The value to be returned if the specified entry is not found.
-        /// </param>
-        /// <returns>
-        /// Read value.
-        /// </returns>
-        /// <exception cref="ArgumentNullException">
-        /// Thrown when parameter <paramref name="key"/> is null.
-        /// </exception>
-        public double ReadDouble(string section, string key, double defaultValue = default)
-        {
-            return Read(section, key, defaultValue);
-        }
-
-        /// <summary>
-        /// Reads a decimal value associated with the specified section and key from the INI file.
-        /// </summary>
-        /// <param name="section">
-        /// Section name. Pass null to get global entries above all sections.
-        /// </param>
-        /// <param name="key">
-        /// Key name.
-        /// </param>
-        /// <param name="defaultValue">
-        /// The value to be returned if the specified entry is not found.
-        /// </param>
-        /// <returns>
-        /// Read value.
-        /// </returns>
-        /// <exception cref="ArgumentNullException">
-        /// Thrown when parameter <paramref name="key"/> is null.
-        /// </exception>
-        public decimal ReadDecimal(string section, string key, decimal defaultValue = default)
-        {
-            return Read(section, key, defaultValue);
-        }
-
-        /// <summary>
-        /// Reads a <see cref="DateTime"/> value associated with the specified section and key from the INI file.
-        /// </summary>
-        /// <param name="section">
-        /// Section name. Pass null to get global entries above all sections.
-        /// </param>
-        /// <param name="key">
-        /// Key name.
-        /// </param>
-        /// <param name="defaultValue">
-        /// The value to be returned if the specified entry is not found.
-        /// </param>
-        /// <returns>
-        /// Read value.
-        /// </returns>
-        /// <exception cref="ArgumentNullException">
-        /// Thrown when parameter <paramref name="key"/> is null.
-        /// </exception>
-        public DateTime ReadDateTime(string section, string key, DateTime defaultValue = default)
-        {
-            return Read(section, key, defaultValue);
         }
 
         /// <summary>
