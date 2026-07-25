@@ -1,8 +1,8 @@
-# IniFile — Convenient Parser for INI Files
+# IniFile — Convenient Single-file INI Editor for .NET
 
-**IniFile** is a lightweight, fault-tolerant INI file parser built on regular expressions. Unlike classic dictionary-based implementations, it **preserves the original formatting** (whitespace, comments, line endings, order) when modifying entries, as it operates directly on text coordinates.
+**IniFile** is a lightweight INI parser tolerant of malformed files. Unlike traditional dictionary-based implementations, it **preserves the original formatting** - including whitespace, comments, line endings, and entry order-by editing the original text directly rather than rebuilding the file.
 
-The class provides a convenient API for reading, writing, and deleting both simple values and multi‑line JSON structures embedded in INI files.
+It provides a convenient API for reading, writing, and deleting values, as well as multi-line JSON blocks embedded in INI files. The library consists of a single source file, **has no external dependencies**. Drop one file into your project and edit INI files without destroying their formatting.
 
 ---
 
@@ -13,11 +13,11 @@ The class provides a convenient API for reading, writing, and deleting both simp
 - **Deletion** – remove a single key, all keys with the same name, or entire sections.
 - **Global entries** – work with key‑value pairs outside any section by passing `null` or an empty string as the section name.
 - **Object serialization** – automatically map INI data to classes using attributes.
-- **Embedded JSON support** – read and write JSON blocks that may span multiple lines and include comments before the block. Work with JSON as raw strings or as dynamic objects.
+- **Multi-line JSON blocks** – read and write JSON blocks that may span multiple lines and include comments before the block. Work with JSON as raw strings or as dynamic objects.
 - **Preserve formatting** – changes modify only the necessary parts, leaving the rest of the file intact.
 - **Static helper methods** – quick one‑liners for reading/writing a single value without creating an instance.
 - **Escape characters** – optional support for `\n`, `\t`, etc.
-- **Auto‑detection** of line endings and encoding (BOM).
+- **Auto‑detection** of line endings and encoding.
 
 ---
 
@@ -39,6 +39,23 @@ ini.Save("config.ini");
 ```
 
 ### Reading and Writing Simple Values
+
+**Example INI content:**
+
+```ini
+[Host]
+Network = localhost
+Port = 8080
+[Paths]
+LogDirectory = /var/log/myapp
+; This is a multiline entry:
+DataDirectory = 
+{
+/opt/data/
+/mnt/backup/
+/tmp/cache/
+}
+```
 
 ```csharp
 // Read
@@ -106,11 +123,20 @@ ini.WriteJsonString("App", "config", "{\"timeout\":60,\"retry\":10}");
 ### Read/Write JSON as Dynamic Object
 
 ```csharp
-dynamic obj = ini.ReadJsonObject("App", "config");
-int timeout = obj.timeout;
-obj.retry = 10;
+// Read JSON as a dictionary/object.
+object obj = ini.ReadJsonObject("App", "config");
+if (obj is IDictionary<string, object> dict)
+{
+    int timeout = Convert.ToInt32(dict["timeout"]);
+    dict["retry"] = 10;
+    ini.WriteJsonObject("App", "config", dict, beautify: true);
+}
 
-ini.WriteJsonObject("App", "config", obj, beautify: true);
+// Alternatively, use dynamic for convenience.
+dynamic dyn = ini.ReadJsonDynamicObject("App", "config");
+int timeout = dyn.timeout;
+dyn.retry = 10;
+ini.WriteJsonDynamicObject("App", "config", dyn, beautify: true);
 ```
 
 The `beautify` option formats the JSON with indentation and newlines for better readability.
@@ -141,11 +167,23 @@ ini.WriteSettings(settings);  // writes back to file
 
 ## Static Helper Methods
 
-For quick access to a single value without creating an instance:
+For quick access to file data without creating an instance:
 
 ```csharp
+// Read/write a single value.
 int port = IniFile.ReadFromFile<int>("config.ini", "Network", "Port", 8080);
 IniFile.WriteToFile("config.ini", "Network", "Port", 9090);
+
+// Export the entire file to a dictionary (returns empty dictionary if file not found).
+var dict = IniFile.ExportToDictionary("config.ini");
+foreach (var section in dict)
+{
+    Console.WriteLine($"[{section.Key}]");
+    foreach (var entry in section.Value)
+    {
+        Console.WriteLine($"  {entry.Key} = {string.Join(", ", entry.Value)}");
+    }
+}
 ```
 
 Overloads with `Encoding` parameter are also available.
@@ -167,11 +205,11 @@ Overloads with `Encoding` parameter are also available.
 | **Read** | `ReadSections()`, `ReadKeys(string section)` |
 | **Read values** | `ReadString`, `ReadStrings`, `Read<T>`, `ReadArray<T>`<br>`ReadBoolean`, `ReadInt32`, `ReadDouble`, `ReadDateTime`, `ReadChar`, ... |
 | **Write** | `WriteString`, `WriteStrings`, `Write<T>`, `WriteArray<T>`<br>`WriteBoolean`, `WriteInt32`, `WriteDouble`, `WriteDateTime`, `WriteChar`, ... |
-| **JSON** | `ReadJsonString`, `WriteJsonString`<br>`ReadJsonObject`, `WriteJsonObject` |
+| **JSON** | `ReadJsonString`, `WriteJsonString`<br>`ReadJsonObject`, `WriteJsonObject`<br>`ReadJsonDynamicObject`, `WriteJsonDynamicObject` |
 | **Delete** | `RemoveKey`, `RemoveKeys`, `RemoveSection` |
-| **Serialization** | `ReadSettings`, `WriteSettings` (for objects) |
+| **Serialization** | `ReadSettings`, `WriteSettings` (for objects), `ExportToDictionary` |
 | **Indexer** | `this[string section, string key]` |
-| **Static** | `Load`, `LoadOrCreate`, `Save`, `ReadFromFile<T>`, `WriteToFile<T>` |
+| **Static** | `Load`, `LoadOrCreate`, `Save`, `ReadFromFile<T>`, `WriteToFile<T>`, `ExportToDictionaryFile` |
 
 All methods accept `section = null` for global entries.
 
@@ -214,41 +252,42 @@ After much research, I came up with the following regular expression that allows
 ```regex
 (?=\S)(?<text>(?<comment>(?<open>[#;]+)(?:[^\S\r\n]*)(?<value>.+))
 |(?<section>(?<open>\[)(?:\s*)(?<value>[^\]]*\S+)(?:[^\S\r\n]*)(?<close>\]))
-|(?<entry>(?<key>[^=\r\n\ [\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:[^\S\r\n]*)(?<value>[^#;\r\n]*))
-|(?<undefined>.+))(?<=\S)|(?<linebreaker>\r\n|\n)|(?<whitespace>[^\S\r\n]+)
+|(?<entry>(?<key>[^=\r\n\ [\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)
+(?:\s*(?<value>\{(?:[^{}"]+|"(?:\\.|[^"])*"|(?<o>\{)|(?<-o>\}))*(?(o)(?!))\})|((?:[^\S\r\n]*)(?<value>[^#;\r\n]*))))
+|(?<undefined>.+))(?<=\S)
+|(?<linebreaker>\r\n|\n)
+|(?<whitespace>[^\S\r\n]+)
 ```
 
 Before we move on to writing the code, I want to break down the parsing regular expression itself and explain what each piece is for.
 
-1. **`(?=\S)`** is a positive lookahead condition that checks that the next character is not a whitespace. This is necessary to skip leading whitespace in the file.
+1. **`(?=\S)`** Ensures that parsing starts at the first meaningful character of a line. Leading indentation is handled separately, allowing the parser to preserve the original formatting.
 
-2. **`(?<text>....)`** is a named group that captures the text block of the file.. This will allow us to get the entire content of the file for further analysis.
+2. **`(?<text>....)`** Represents a complete logical text element. Every meaningful line is classified as one of the supported INI constructs: a comment, a section header, a key-value entry, or undefined text.
 
-3. **`(?<comment>(?<open>[#;]+)(?:[^\S\r\n]*)(?<value>.+))`** is a named group that captures comments in the file. It consists of:
-    - **`(?<open>[#;]+)`** is a group that captures one or more "#" or ";" characters, denoting the beginning of a comment.
-    - **`(?:[^\S\r\n]*)`** - a group that captures zero or more non-whitespace characters, not including newline characters.
-    - **`(?<value>.+)`** - a group that captures all characters up to the end of the line, i.e. the entire comment text.
+3. **`(?<comment>(?<open>[#;]+)(?:[^\S\r\n]*)(?<value>.+))`** Matches comment lines beginning with ; or #. The comment marker and its text are captured separately so that comments can be preserved or modified without affecting surrounding whitespace.
+    - **`(?<open>[#;]+)`** captures the beginning of a comment.
+    - **`(?:[^\S\r\n]*)`** captures whitespace characters, not including newline characters.
+    - **`(?<value>.+)`** - captures the entire comment text.
     - 
-4. **`(?<section>(?<open>\[)(?:\s*)(?<value>[^\]]*\S+)(?:[^\S\r\n]*)(?<close>\]))`** - is a named group that captures sections. It consists of:
-    - **`(?<open>\[)`** - a group that captures the "[" character, which denotes the beginning of a section.
-    - **`(?:\s*)`** - a group that captures zero or more whitespace characters.
-    - **`(?<value>[^\]]*\S+)`** - a group that captures one or more non-whitespace characters, not including the "]" character.
-    - **`(?:[^\S\r\n]*)`** is a group that captures zero or more non-whitespace characters, not including newline characters.
-    - **`(?<close>\])`** is a group that captures the "]" character, which marks the end of a section.
+4. **`(?<section>(?<open>\[)(?:\s*)(?<value>[^\]]*\S+)(?:[^\S\r\n]*)(?<close>\]))`** Matches section headers such as \[Section\]. The opening bracket, section name, and closing bracket are captured individually, allowing the original spacing to remain unchanged after editing.
+    - **`(?<open>\[)`** - captures the beginning of a section.
+    - **`(?:\s*)`** - captures whitespace characters.
+    - **`(?<value>[^\]]*\S+)`** - captures name of the section.
+    - **`(?<close>\])`** captures the "]" character, which marks the end of a section.
 
-5. **`(?<entry>(?<key>[^=\r\n\[\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:[^\S\r\n]*)(?<value>[^#;\r\n]*))`** is a named group that captures entries (key-value). It consists of:
-    - **`(?<key>[^=\r\n\[\]]*\S)`** is a group that captures one or more non-whitespace characters, not including the "=", newline, and "[" characters.
-    - **`(?:[^\S\r\n]*)`** is a group that captures zero or more non-whitespace characters, not including newline characters.
-    - **`(?<delimiter>:|=)`** is a group that captures the ":" or "=" character separating the key and value.
-    - **`(?:[^\S\r\n]*)`** is a group that captures zero or more non-whitespace characters, not including newline characters.
-    - **`(?<value>[^#;\r\n]*)`** is a group that captures zero or more characters, not including "#", ";", newline characters.
-6. **`(?<undefined>.+)`** is a named group that captures any undefined parts of the text that did not match the previous groups.
+5. **`(?<entry>(?<key>[^=\r\n\ [\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:\s*(?<value>\{(?:[^{}""]+|""(?:\\.|[^""])*""|(?<o>\{)|(?<-o>\}))*(?(o)(?!))\})|((?:[^\S\r\n]*)(?<value>[^#;\r\n]*))))|`** Matches key-value entries. It extracts the key name, the delimiter (= or :), and either a regular single-line value or a multiline value enclosed in { ... }. Nested braces and quoted strings inside wrapped values are handled correctly, making the parser suitable for embedded JSON.
+    - **`(?<key>[^=\r\n\[\]]*\S)`** captures key of the entry.
+    - **`(?<delimiter>:|=)`** captures the ":" or "=" character separating the key and value.
+    - **`(?<value>\{(?:[^{}""]+|""(?:\\.|[^""])*""|(?<o>\{)|(?<-o>\}))*(?(o)(?!))\})`** captures text enclosed in '{' and '}' with backtracking.
+    - **`(?<value>[^#;\r\n]*)`** captures regular INI value.
+6. **`(?<undefined>.+)`** captures any undefined parts of the text that did not match the previous groups.
 
 7. **`(?<=\S)`** is a positive lookahead condition that checks that the preceding character is not a whitespace character. This is necessary to skip trailing whitespace in the file.
 
-8. **`(?<linebreaker>\r\n|\n)`** is a named group that captures newline characters ("\r\n" or "\n").
+8. **`(?<linebreaker>\r\n|\n)`** captures newline characters ("\r\n" or "\n").
 
-9. **`(?<whitespace>[^\S\r\n]+)`** is a named group that captures one or more whitespace characters, not including newline characters.
+9. **`(?<whitespace>[^\S\r\n]+)`** captures one or more whitespace characters, not including newline characters.
 
   This is a very detailed and carefully designed regular expression designed to accurately parse the structure of an INI file and extract all the necessary components (sections, keys, values, comments, etc.) from it. It can handle various formatting variations of INI files and provides a robust and flexible way of parsing.
 
@@ -261,18 +300,7 @@ You can experiment with this regular expression using this [link](https://regex1
 ## C-Sharp coding
 
 To solve the problem of parsing INI files using regular expressions, I created the **IniFile** class. This class will be responsible for reading and parsing the contents of an INI file using regular expressions to extract keys, values, and sections. The class has methods for loading a file, getting a list of sections, getting values ​​by keys, and writing changes back to the file. Using regular expressions, IniFile will be able to handle various configuration file formats, including files with comments, indents, spaces, syntax errors, and other features. This will make the parser more flexible and universal. To use the class, you need to pass it a string or stream containing the INI file data and parsing settings.
-### Key features of the class
-1. Support for various loading and saving methods: The class provides methods for loading INI files from a string, stream, or file, as well as saving them to a stream or file.
-2. Using regular expressions: Using regular expressions allows for flexible and efficient handling of various INI file formats, including support for comments, sections, and key-values. This makes the code more compact and easily extensible compared to using manual string processing.
-3. No dependence on collections: The class does not use collections to store INI file data, which makes it more memory efficient and simplifies working with large files.
-4. Preserving original formatting: When modifying existing entries or adding new ones, the class preserves the original INI file formatting, including the location of comments, spaces, and line breaks. This helps maintain the readability and structure of the file.
-5. Support for escape characters: The class provides the ability to work with escape characters in key values. This allows for the correct handling of special characters such as tabs, line feeds, etc.
-6. Automatic detection of line break characters: The class automatically detects the type of line break characters (CRLF, LF, or CR) in the INI file and uses them when saving changes.
-7. Flexible customization of string comparison: The class allows you to customize the string comparison rules (case sensitivity, cultural specificity) according to the requirements of the application.
-8. Support for various loading and saving methods: The class provides methods for loading INI files from a string, stream, or file, as well as saving them to a stream or file.
-9. Convenient API for working with INI files: The class offers a simple and intuitive API for reading and writing values ​​to INI files, including support for various data types.
-Thus, using the IniFileRegexParser class allows you to efficiently and flexibly work with INI files, preserving their structure and formatting, and also provides ample opportunities for customization and expansion of functionality.
 
 ## License
 
-MIT License © 2024 Pavel Bashkardin. See the header in the source file for details.
+MIT License © 2024 Pavel Bashkardin. See [License](https://github.com/ng256/IniFile/blob/main/LICENSE) file for details.
