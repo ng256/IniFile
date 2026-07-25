@@ -1,8 +1,8 @@
 # IniFile — Convenient Single-file INI Editor for .NET
 
-**IniFile** is a lightweight INI parser tolerant of malformed files. Unlike traditional dictionary-based implementations, it **preserves the original formatting** - including whitespace, comments, line endings, and entry order-by editing the original text directly rather than rebuilding the file.
+**IniFile** is a lightweight INI parser that is tolerant of malformed files. Unlike traditional dictionary-based implementations, it **preserves the original formatting** — including whitespace, comments, line endings, and entry order — by modifying the original text directly instead of rebuilding the file.
 
-It provides a convenient API for reading, writing, and deleting values, as well as multi-line JSON blocks embedded in INI files. The library consists of a single source file, **has no external dependencies**. Drop one file into your project and edit INI files without destroying their formatting.
+It provides a convenient API for reading, writing, and deleting values, as well as handling multi-line JSON blocks embedded in INI files. The library consists of a single source file and has no external dependencies. Drop one file into your project and edit INI files without destroying their formatting.
 
 ---
 
@@ -28,14 +28,54 @@ It provides a convenient API for reading, writing, and deleting values, as well 
 ```csharp
 using System.Ini;
 
-// Load from file
+// Load from file.
 var ini = IniFile.Load("config.ini");
 
-// Or create a new empty one
-var ini = IniFile.Create();
+// Or create a new empty instance.
+ini = IniFile.Create();
 
-// Save changes
+// Load the file or create a new one if it does not exist.
+ini = IniFile.LoadOrCreate("config.ini");
+
+// Save changes.
 ini.Save("config.ini");
+```
+
+You can customize the parser behavior by specifying the text encoding and string comparison rules.
+```csharp
+using System.Text;
+using System.Ini;
+
+// Load with a specific encoding
+var ini = IniFile.Load("config.ini", Encoding.UTF8);
+
+// Create with custom string comparison rules.
+// StringComparison.OrdinalIgnoreCase makes key and section names case-insensitive.
+ini = IniFile.Create(StringComparison.OrdinalIgnoreCase);
+
+// Load with both encoding and comparison settings
+ini = IniFile.Load("config.ini", Encoding.UTF8, StringComparison.OrdinalIgnoreCase);
+
+// ... 
+
+ini.Save("config.ini", Encoding.UTF8);
+```
+
+You can also enable optional features such as escape character processing and multiline values support. When allowEscChars is enabled, escape sequences such as \n, \t, and \\ are converted automatically. When allowMultiLine is enabled, values enclosed in { ... } can span multiple lines and preserve their internal formatting.
+```csharp
+using System.Ini;
+
+// Enable escape sequences and multiline values support.
+var ini = IniFile.Create(allowEscChars: true, allowMultiLine: true);
+
+// Load an INI file with these options enabled.
+ini = IniFile.Load("config.ini", allowEscChars: true, allowMultiLine: true);
+
+// Load with custom comparison and additional features enabled.
+ini = IniFile.Load("config.ini",
+    comparison: StringComparison.OrdinalIgnoreCase,
+    allowEscChars: true,
+    allowMultiLine: true);
 ```
 
 ### Reading and Writing Simple Values
@@ -43,29 +83,48 @@ ini.Save("config.ini");
 **Example INI content:**
 
 ```ini
+; Application configuration
+
 [Host]
 Network = localhost
 Port = 8080
-[Paths]
+
+[Environment]
 LogDirectory = /var/log/myapp
-; This is a multiline entry:
-DataDirectory = 
+
+; Multiline shell script
+Script =
 {
-/opt/data/
-/mnt/backup/
-/tmp/cache/
+#!/bin/sh
+
+echo "Starting..."
+
+mkdir -p /var/cache/myapp
+cp -r /opt/data/* /var/cache/myapp/
+
+echo "Done."
 }
+
+[SearchPaths]
+; Duplicate keys are supported
+Path = /opt/data/
+Path = /mnt/backup/
+Path = /var/cache/myapp
 ```
+**Working with file:**
 
 ```csharp
-// Read
-string host = ini.ReadString("Network", "Host", "localhost");
-int port = ini.ReadInt32("Network", "Port", 8080);
-bool enabled = ini.ReadBoolean("Network", "Enabled", true);
 
-// Write
-ini.WriteString("Network", "Host", "192.168.1.1");
-ini.WriteInt32("Network", "Port", 9090);
+// Read values
+string network = ini.ReadString("Host", "Network", "localhost");
+int port = ini.ReadInt32("Host", "Port", 8080);
+bool enabled = ini.ReadBoolean("Network", "Enabled", true); // Returns the default value (true) because the key is not found.
+string script = ini.ReadString("Environment", "Script"); // The surrounding braces are removed automatically.
+string[] paths = ini.ReadStrings("SearchPaths", "Path"); // Reads all values with the same key.
+
+// Write values
+ini.WriteString("Host", "Network", "192.168.1.1");
+ini.WriteInt32("Host", "Port", 9090);
 ini.WriteBoolean("Network", "Enabled", false);
 ```
 
@@ -96,7 +155,7 @@ ini.RemoveSection("Servers");
 
 ## JSON Support
 
-INI files often contain JSON‑like structures. `IniFile` can extract and replace such blocks, even if they span several lines and are preceded by comments.
+Although the INI format does not define support for structured data, many applications store custom blocks inside INI files. `IniFile` extends the format by supporting embedded JSON and multiline brace-enclosed values, while keeping the original INI structure intact.
 
 **Example INI content:**
 
@@ -150,15 +209,17 @@ Automatically map INI sections to classes and properties.
 class NetworkSettings
 {
     public string Host { get; set; } = "localhost";
-    public int Port { get; set; } = 8080;
-    [IniIgnore]
+    [IniEntry("Port")]  // Maps the property to a different INI key name.
+    public int ConnectionPort { get; set; } = 8080;
+    [IniIgnore] // Prevents the property from being read or written.
     public string Comment { get; set; }
 }
 
 var ini = IniFile.Load("config.ini");
 var settings = new NetworkSettings();
-ini.ReadSettings(settings);   // fills from file
-ini.WriteSettings(settings);  // writes back to file
+ini.ReadSettings(settings);   // Reads values from the INI file.
+// ... make changes to settings.
+ini.WriteSettings(settings);  // Writes values back to the INI file.
 ```
 
 ---
@@ -172,7 +233,7 @@ For quick access to file data without creating an instance:
 int port = IniFile.ReadFromFile<int>("config.ini", "Network", "Port", 8080);
 IniFile.WriteToFile("config.ini", "Network", "Port", 9090);
 
-// Export the entire file to a dictionary (returns empty dictionary if file not found).
+// Convert the file contents to a dictionary representation (returns empty dictionary if file not found).
 var dict = IniFile.ExportToDictionary("config.ini");
 foreach (var section in dict)
 {
@@ -227,8 +288,9 @@ Parsing INI files is a fairly common task in programming when working with confi
 - Parsing using common libraries for working with configuration files, such as configparser in Python or .NET's ConfigurationManager. This approach is universal, but may be less flexible than specialized solutions.
 - Processing using regular expression.
 
-In this article, I plan to talk about parsing INI files using regular expressions in C#. This is an interesting and powerful approach that allows you to customize the processing logic as much as possible for your needs. Regular expressions provide greater flexibility in parsing file structure, but require a deeper understanding of regular expression syntax. This article will certainly be useful to readers who need customized INI file processing. This approach allows you to preserve the original file formatting, modify existing entries, and add new ones without using collections.
-Thus, using regular expressions to parse INI files provides high performance, flexibility, preservation of original formatting and ease of use, which makes this approach an effective solution for working with configuration data in the INI format.
+INI is a simple and widely used configuration format. However, despite its simplicity, there is no single strict standard, and real-world files often contain formatting variations, comments, duplicate keys, malformed lines, and application-specific extensions.
+
+The goal of this project is to provide a flexible parser that can handle these variations while preserving the original file structure. Thus, using regular expressions to parse INI files provides high performance, flexibility, preservation of original formatting and ease of use, which makes this approach an effective solution for working with configuration data in the INI format.
 
 ## INI file format
 
@@ -295,7 +357,7 @@ Take a look at the parsing of the above sample using this regular expression:
 
 You can experiment with this regular expression using this [link](https://regex101.com/r/mul0C2).
 
-## C-Sharp coding
+## C# Implementation
 
 To solve the problem of parsing INI files using regular expressions, I created the **IniFile** class. This class will be responsible for reading and parsing the contents of an INI file using regular expressions to extract keys, values, and sections. The class has methods for loading a file, getting a list of sections, getting values ​​by keys, and writing changes back to the file. Using regular expressions, IniFile will be able to handle various configuration file formats, including files with comments, indents, spaces, syntax errors, and other features. This will make the parser more flexible and universal. To use the class, you need to pass it a string or stream containing the INI file data and parsing settings.
 
