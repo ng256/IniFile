@@ -1,74 +1,75 @@
-/***************************************************************
+/******************************************************************************
 
 •   File: IniFile.cs
 
 •   Description
 
-    THe IniFile is a class that represents a parser of ini files
-    using regular expressions.
+    IniFile is a class that provides parsing,  editing,  and serialization 
+    of INI files using regular expressions.
 
-    The class implements methods for working with ini files:
+    The class provides functionality for:
        - parsing INI files;
-       - getting sections, keys and values by sections and keys;
-       - setting values (including multiple values for the same
-         key);
-       - removing keys and whole sections;
-       - automatically initializing properties;
-       - reading and writing embedded  JSON blocks  (raw strings 
-         or dynamic objects)  that may span  multiple lines  and 
-         include comments before the JSON.
+       - reading and writing sections, keys, and values;
+       - supporting multiple values for the same key;
+       - adding, updating, and removing keys and sections;
+       - automatically mapping objects to and from INI files;
+       - reading and writing multiline values enclosed in '{' and '}';
+       - reading and writing embedded JSON blocks as raw strings or 
+         dynamic objects.
 
-    All modifications preserve  the  original formatting  of the 
-    file,  including whitespace,  comments,  and  line  endings, 
-    by  operating  directly  on  text coordinates.
+    All modifications  preserve the original  formatting    of the   file,
+    including  whitespace, comments,  and   line   endings,   by operating
+    directly on the original text.
 
-    To  use the class, you  must  pass  it  a  string  or stream
-    containing the ini file data and some parsing settings.
+    INI parsing behavior can be  configured,  including  string comparison
+    rules, multiline values, escape sequences, and other  parser options.
+
+    The class  can load INI  data  from strings, text readers, streams, or
+    files, and can save the modified content back without reformatting.
 
 •   License
 
     This software is distributed under the MIT License (MIT)
 
-    © 2024 Pavel Bashkardin.
+    © 2024-2026 Pavel Bashkardin.
 
-    Permission is  hereby granted, free of charge, to any person
-    obtaining   a copy    of    this  software    and associated
-    documentation  files  (the “Software”),    to  deal   in the
-    Software without  restriction, including without  limitation
-    the rights to use, copy, modify, merge, publish, distribute,
-    sublicense,  and/or  sell  copies   of  the Software, and to
-    permit persons to whom the Software  is furnished to  do so,
-    subject to the following conditions:
+    Permission  is hereby granted, free of charge, to any person obtaining
+    a  copy  of this  software    and associated documentation  files (the
+    "Software"), to deal in the   Software without  restriction, including
+    without  limitation the rights to  use,  copy, modify, merge, publish,
+    distribute, sublicense, and/or sell   copies of the Software,   and to
+    permit persons to whom  the Software is furnished to do so, subject to
+    the following conditions:
 
-    The above copyright  notice and this permission notice shall
-    be  included  in all copies   or substantial portions of the
-    Software.
+    The  above  copyright  notice  and    this permission notice  shall be
+    included  in all  copies or substantial portions of  the Software.
 
-    THE  SOFTWARE IS  PROVIDED  “AS IS”, WITHOUT WARRANTY OF ANY
-    KIND, EXPRESS  OR IMPLIED, INCLUDING  BUT NOT LIMITED TO THE
-    WARRANTIES  OF MERCHANTABILITY, FITNESS    FOR A  PARTICULAR
-    PURPOSE AND NONINFRINGEMENT. IN  NO EVENT SHALL  THE AUTHORS
-    OR  COPYRIGHT HOLDERS  BE  LIABLE FOR ANY CLAIM,  DAMAGES OR
-    OTHER LIABILITY,  WHETHER IN AN  ACTION OF CONTRACT, TORT OR
-    OTHERWISE, ARISING FROM, OUT OF   OR IN CONNECTION  WITH THE
-    SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+    THE  SOFTWARE  IS PROVIDED  "AS  IS", WITHOUT  WARRANTY   OF ANY KIND,
+    EXPRESS  OR  IMPLIED, INCLUDING  BUT  NOT LIMITED TO THE WARRANTIES OF
+    MERCHANTABILITY,   FITNESS  FOR          A  PARTICULAR     PURPOSE AND
+    NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+    LIABLE  FOR  ANY CLAIM,  DAMAGES OR    OTHER LIABILITY,  WHETHER IN AN
+    ACTION  OF CONTRACT, TORT  OR  OTHERWISE,  ARISING FROM, OUT  OF OR IN
+    CONNECTION   WITH THE SOFTWARE OR  THE   USE OR OTHER DEALINGS  IN THE
+    SOFTWARE.
 
-***************************************************************/
+******************************************************************************/
 
-using System.Collections.Generic;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Globalization;
 using System.ComponentModel;
-using System.IO;
-using System.Linq;
 using System.Reflection;
 using System.Diagnostics;
 using System.Collections;
 using System.Dynamic;
 
+#nullable disable
+
 namespace System.Ini
 {
+    #region INI serialization attributes
+
     /// <summary>
     /// Indicates that a property should be ignored by the INI serialization methods.
     /// </summary>
@@ -190,6 +191,8 @@ namespace System.Ini
 
     }
 
+    #endregion
+
     /// <summary>
     /// Represents a regular expression-based, collection-free INI file parser that preserves the original file formatting when editing entries.
     /// </summary>
@@ -197,6 +200,10 @@ namespace System.Ini
     [DebuggerDisplay("{Content}")]
     public sealed class IniFile
     {
+        /*********************************************** Class structure ***********************************************/
+
+        #region Private fields
+
         // Private field for storing the content of the INI file.
         private string _content;
 
@@ -239,6 +246,10 @@ namespace System.Ini
         [NonSerialized]
         private readonly HashSet<string> _falseValues;
 
+        #endregion
+
+        #region Public properties
+
         /// <summary>
         /// Returns a string representing the contents of the INI file.
         /// </summary>
@@ -264,6 +275,12 @@ namespace System.Ini
             }
         }
 
+        #endregion
+
+        /*********************************************** File operations ***********************************************/
+
+        #region Constructors
+
         // Private constructor to prevent direct instantiation.
         private IniFile()
         { }
@@ -274,7 +291,7 @@ namespace System.Ini
         // based on the provided settings.
         private IniFile(string content,
             StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
-            bool allowEscChars = false)
+            bool allowEscChars = false, bool allowMultiLine = false)
         {
             if ((uint)comparison > (uint)StringComparison.OrdinalIgnoreCase)
                 throw new ArgumentOutOfRangeException(nameof(comparison));
@@ -284,7 +301,7 @@ namespace System.Ini
             var regexOptions = GetRegexOptions(comparison, RegexOptions.Compiled | RegexOptions.ExplicitCapture);
             _iniRegex = new Regex(@"(?=\S)(?<text>(?<comment>(?<open>[#;]+)(?:[^\S\r\n]*)(?<value>.+))|" +
                                @"(?<section>(?<open>\[)(?:\s*)(?<value>[^\]]*\S+)(?:[^\S\r\n]*)(?<close>\]))|" +
-                               @"(?<entry>(?<key>[^=\r\n\[\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:[^\S\r\n]*)(?<value>[^#;\r\n]*))|" +
+                               @"(?<entry>(?<key>[^=\r\n\ [\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:\s*(?<value>\{(?:[^{}""]+|""(?:\\.|[^""])*""|(?<o>\{)|(?<-o>\}))*(?(o)(?!))\})|((?:[^\S\r\n]*)(?<value>[^#;\r\n]*))))|" +
                                @"(?<undefined>.+))(?<=\S)|" +
                                @"(?<linebreaker>\r\n|\n)|" +
                                @"(?<whitespace>[^\S\r\n]+)",
@@ -307,6 +324,10 @@ namespace System.Ini
             _falseValues = new HashSet<string>(comparer) { "false", "no", "off", "disable", "0" };
         }
 
+        #endregion
+
+        #region Factory methods
+
         /// <summary>
         /// Create a new instance of <see cref="IniFile"/> with empty content.
         /// </summary>
@@ -316,20 +337,23 @@ namespace System.Ini
         /// <param name="allowEscChars">
         /// Indicates whether escape characters are allowed in the INI file.
         /// </param>
+        /// <param name="allowMultiLine">
+        /// Indicates whether multiline blocks enclosed in '{' and '}' are allowed in the INI file.
+        /// </param>
         /// <returns>
         /// An instance of <see cref="IniFile"/> initialized with the specified settings.
         /// </returns>
         public static IniFile Create(StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
-            bool allowEscChars = false)
+            bool allowEscChars = false, bool allowMultiLine = false)
         {
-            return new IniFile(string.Empty, comparison, allowEscChars);
+            return new IniFile(string.Empty, comparison, allowEscChars, allowMultiLine);
         }
 
         /// <summary>
-        /// Loads an INI file using a <see cref="TextReader"/> and initializes an instance of <see cref="IniFile"/>.
+        /// Loads an INI file from a <see cref="TextReader"/> and initializes a new <see cref="IniFile"/> instance.
         /// </summary>
         /// <param name="reader">
-        /// The <see cref="TextReader"/> containing the INI file data.
+        /// The <see cref="TextReader"/> containing the INI data.
         /// </param>
         /// <param name="comparison">
         /// Specifies the rules for string comparison.
@@ -337,24 +361,27 @@ namespace System.Ini
         /// <param name="allowEscChars">
         /// Indicates whether escape characters are allowed in the INI file.
         /// </param>
+        /// <param name="allowMultiLine">
+        /// Indicates whether multiline blocks enclosed in '{' and '}' are allowed in the INI file.
+        /// </param>
         /// <returns>
-        /// An instance of <see cref="IniFile"/> initialized with the specified data and settings.
+        /// A new <see cref="IniFile"/> instance initialized with the specified reader.
         /// </returns>
         public static IniFile Load(TextReader reader,
             StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
-            bool allowEscChars = false)
+            bool allowEscChars = false, bool allowMultiLine = false)
         {
-            return new IniFile(reader.ReadToEnd(), comparison, allowEscChars);
+            return new IniFile(reader.ReadToEnd(), comparison, allowEscChars, allowMultiLine);
         }
 
         /// <summary>
-        /// Loads an INI file from a <see cref="Stream"/> using the specified encoding and initializes an instance of <see cref="IniFile"/>.
+        /// Loads an INI file from a <see cref="Stream"/> and initializes a new <see cref="IniFile"/> instance.
         /// </summary>
         /// <param name="stream">
-        /// The <see cref="Stream"/> containing the INI file data.
+        /// The <see cref="Stream"/> containing the INI data.
         /// </param>
         /// <param name="encoding">
-        /// The <see cref="Encoding"/> used to read the stream.
+        /// The <see cref="Encoding"/> used to read the stream, or <see langword="null"/> to use UTF-8.
         /// </param>
         /// <param name="comparison">
         /// Specifies the rules for string comparison.
@@ -362,25 +389,28 @@ namespace System.Ini
         /// <param name="allowEscChars">
         /// Indicates whether escape characters are allowed in the INI file.
         /// </param>
+        /// <param name="allowMultiLine">
+        /// Indicates whether multiline blocks enclosed in '{' and '}' are allowed in the INI file.
+        /// </param>
         /// <returns>
-        /// An instance of <see cref="IniFile"/> initialized with the specified data and settings.
+        /// A new <see cref="IniFile"/> instance initialized with the specified stream.
         /// </returns>
         public static IniFile Load(Stream stream, Encoding encoding = null,
             StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
-            bool allowEscChars = false)
+            bool allowEscChars = false, bool allowMultiLine = false)
         {
             using (StreamReader reader = new StreamReader(stream ?? throw new ArgumentNullException(nameof(stream)), encoding ?? Encoding.UTF8))
-                return new IniFile(reader.ReadToEnd(), comparison, allowEscChars);
+                return new IniFile(reader.ReadToEnd(), comparison, allowEscChars, allowMultiLine);
         }
 
         /// <summary>
-        /// Loads an INI file from a file specified by its path using the specified encoding and initializes an instance of <see cref="IniFile"/>.
+        /// Loads an INI file and initializes a new <see cref="IniFile"/> instance.
         /// </summary>
         /// <param name="fileName">
-        /// The path to the file containing the INI data.
+        /// The path to the INI file.
         /// </param>
         /// <param name="encoding">
-        /// The <see cref="Encoding"/> used to read the file.
+        /// The <see cref="Encoding"/> used to read the file, or <see langword="null"/> to detect it automatically.
         /// </param>
         /// <param name="comparison">
         /// Specifies the rules for string comparison.
@@ -388,21 +418,95 @@ namespace System.Ini
         /// <param name="allowEscChars">
         /// Indicates whether escape characters are allowed in the INI file.
         /// </param>
+        /// <param name="allowMultiLine">
+        /// Indicates whether multiline blocks enclosed in '{' and '}' are allowed in the INI file.
+        /// </param>
         /// <returns>
-        /// An instance of <see cref="IniFile"/> initialized with the specified data and settings.
+        /// A new <see cref="IniFile"/> instance initialized with the specified file.
         /// </returns>
         public static IniFile Load(string fileName,
             Encoding encoding,
             StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
-            bool allowEscChars = false)
+            bool allowEscChars = false, bool allowMultiLine = false)
         {
             string filePath = GetFullPath(fileName, true);
             return new IniFile(File.ReadAllText(filePath, encoding ?? AutoDetectEncoding(filePath, Encoding.UTF8)),
-                comparison, allowEscChars);
+                comparison, allowEscChars, allowMultiLine);
         }
 
         /// <summary>
-        /// Loads an INI file from a file specified by its path using the specified encoding and initializes an instance of <see cref="IniFile"/>.
+        /// Loads an INI file and initializes a new <see cref="IniFile"/> instance.
+        /// </summary>
+        /// <param name="fileName">
+        /// The path to the INI file.
+        /// </param>
+        /// <param name="comparison">
+        /// Specifies the rules for string comparison.
+        /// </param>
+        /// <param name="allowEscChars">
+        /// Indicates whether escape characters are allowed in the INI file.
+        /// </param>
+        /// <param name="allowMuliLine">
+        /// Indicates whether multiline blocks enclosed in '{' and '}' are allowed in the INI file.
+        /// </param>
+        /// <returns>
+        /// A new <see cref="IniFile"/> instance initialized with the specified file.
+        /// </returns>
+        public static IniFile Load(string fileName,
+            StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
+            bool allowEscChars = false, bool allowMuliLine = false)
+        {
+            if (fileName == null)
+                throw new ArgumentNullException(nameof(fileName));
+
+            string filePath = GetFullPath(fileName, true);
+            Encoding encoding = AutoDetectEncoding(filePath, Encoding.UTF8);
+
+            return new IniFile(File.ReadAllText(filePath, encoding),
+                comparison, allowEscChars, allowMuliLine);
+        }
+
+        /// <summary>
+        /// Loads an INI file if it exists; otherwise, creates an empty <see cref="IniFile"/>.
+        /// </summary>
+        /// <param name="fileName">
+        /// The path to the INI file.
+        /// </param>
+        /// <param name="encoding">
+        /// The <see cref="Encoding"/> used to read the file, or <see langword="null"/> to detect it automatically.
+        /// </param>
+        /// <param name="comparison">
+        /// Specifies the rules for string comparison.
+        /// </param>
+        /// <param name="allowEscChars">
+        /// Indicates whether escape characters are allowed in the INI file.
+        /// </param>
+        /// <param name="allowMultiLine">
+        /// Indicates whether multiline blocks enclosed in '{' and '}' are allowed in the INI file.
+        /// </param>
+        /// <returns>
+        /// A new <see cref="IniFile"/> instance initialized with the specified settings.
+        /// </returns>
+        public static IniFile LoadOrCreate(string fileName, Encoding encoding,
+            StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
+            bool allowEscChars = false, bool allowMultiLine = false)
+        {
+            if (fileName == null)
+                throw new ArgumentNullException(nameof(fileName));
+
+            string filePath = GetFullPath(fileName);
+            if (encoding == null)
+                encoding = AutoDetectEncoding(filePath, Encoding.UTF8);
+
+            return new IniFile(
+                File.Exists(filePath)
+                    ? File.ReadAllText(filePath, encoding)
+                    : string.Empty,
+                comparison, allowEscChars, allowMultiLine);
+        }
+
+        /// <summary>
+        /// Loads an INI file if it exists; otherwise, creates an empty <see cref="IniFile"/>.
         /// </summary>
         /// <param name="fileName">
         /// The path to the file containing the INI data.
@@ -413,77 +517,32 @@ namespace System.Ini
         /// <param name="allowEscChars">
         /// Indicates whether escape characters are allowed in the INI file.
         /// </param>
-        /// <returns>
-        /// An instance of <see cref="IniFile"/> initialized with the specified data and settings.
-        /// </returns>
-        public static IniFile Load(string fileName,
-            StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
-            bool allowEscChars = false)
-        {
-            string filePath = GetFullPath(fileName, true);
-
-            return new IniFile(File.ReadAllText(filePath, AutoDetectEncoding(filePath, Encoding.UTF8)),
-                comparison, allowEscChars);
-        }
-
-        /// <summary>
-        /// Loads an INI file using a <see cref="TextReader"/> or create it with empty content
-        /// and initializes an instance of <see cref="IniFile"/>.
-        /// </summary>
-        /// <param name="fileName">
-        /// The path to the file containing the INI data.
-        /// </param>
-        /// <param name="encoding">
-        /// The <see cref="Encoding"/> used to read the file.
-        /// </param>
-        /// <param name="comparison">
-        /// Specifies the rules for string comparison.</param>
-        /// <param name="allowEscChars">
-        /// Indicates whether escape characters are allowed in the INI file.
-        /// </param>
-        /// <returns>
-        /// An instance of <see cref="IniFile"/> initialized with the specified settings.
-        /// </returns>
-        public static IniFile LoadOrCreate(string fileName, Encoding encoding,
-            StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
-            bool allowEscChars = false)
-        {
-            string filePath = GetFullPath(fileName);
-
-            return new IniFile(
-                File.Exists(filePath)
-                    ? File.ReadAllText(filePath, encoding ?? AutoDetectEncoding(filePath, Encoding.UTF8))
-                    : string.Empty,
-                comparison, allowEscChars);
-        }
-
-        /// <summary>
-        /// Loads an INI file using a <see cref="TextReader"/> or create it with empty content
-        /// and initializes an instance of <see cref="IniFile"/>.
-        /// </summary>
-        /// <param name="fileName">
-        /// The path to the file containing the INI data.
-        /// </param>
-        /// <param name="comparison">
-        /// Specifies the rules for string comparison.</param>
-        /// <param name="allowEscChars">
-        /// Indicates whether escape characters are allowed in the INI file.
+        /// <param name="allowMultiLine">
+        /// Indicates whether multiline blocks enclosed in '{' and '}' are allowed in the INI file.
         /// </param>
         /// <returns>
         /// An instance of <see cref="IniFile"/> initialized with the specified settings.
         /// </returns>
         public static IniFile LoadOrCreate(string fileName,
             StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
-            bool allowEscChars = false)
+            bool allowEscChars = false, bool allowMultiLine = false)
         {
+            if (fileName == null)
+                throw new ArgumentNullException(nameof(fileName));
+            
             string filePath = GetFullPath(fileName);
+            Encoding encoding = AutoDetectEncoding(filePath, Encoding.UTF8);
 
             return new IniFile(
                 File.Exists(filePath)
-                    ? File.ReadAllText(filePath, AutoDetectEncoding(filePath, Encoding.UTF8))
+                    ? File.ReadAllText(filePath, encoding)
                     : string.Empty,
-                comparison, allowEscChars);
+                comparison, allowEscChars, allowMultiLine);
         }
+
+        #endregion
+
+        #region Save methods
 
         /// <summary>
         /// Saves the INI file content to a <see cref="TextWriter"/>.
@@ -526,6 +585,10 @@ namespace System.Ini
             File.WriteAllText(fullPath, Content, encoding ?? Encoding.UTF8);
         }
 
+        #endregion
+
+        #region Static file access methods
+
         /// <summary>
         /// Reads a value of type <typeparamref name="T"/> from the specified INI file,
         /// section, and key. If the file does not exist, returns <paramref name="defaultValue"/>.
@@ -535,23 +598,34 @@ namespace System.Ini
         /// <param name="section">Section name. Pass <c>null</c> for global entries.</param>
         /// <param name="key">Key name.</param>
         /// <param name="defaultValue">Default value returned if the entry is not found.</param>
+        /// <param name="allowEscChars">
+        /// Indicates whether escape characters are allowed in the INI file.
+        ///</param>
+        /// <param name="allowMultiLine">
+        /// Indicates whether multiline blocks enclosed in '{' and '}' are allowed in the INI file.
+        ///</param>
         /// <returns>The read value, or <paramref name="defaultValue"/> if not found.</returns>
         /// <exception cref="ArgumentNullException">Thrown when <paramref name="key"/> is <c>null</c>.</exception>
-        public static T ReadFromFile<T>(string fileName, string section, string key, T defaultValue = default)
+        public static T ReadFromFile<T>(string fileName, string section, string key, T defaultValue = default,
+            bool allowEscChars = false, bool allowMultiLine = false)
         {
             if (key == null)
                 throw new ArgumentNullException(nameof(key));
-        
+
             if (!File.Exists(fileName))
                 return defaultValue;
-        
+
             using (var reader = new StreamReader(fileName, AutoDetectEncoding(fileName, Encoding.UTF8)))
             {
-                var ini = Load(reader);
+                var ini = Load(reader,
+                    StringComparison.InvariantCultureIgnoreCase,
+                    allowEscChars,
+                    allowMultiLine);
+
                 return ini.Read<T>(section, key, defaultValue);
             }
         }
-        
+
         /// <summary>
         /// Writes a value of type <typeparamref name="T"/> to the specified INI file,
         /// section, and key. If the file does not exist, it is created.
@@ -561,16 +635,34 @@ namespace System.Ini
         /// <param name="section">Section name. Pass <c>null</c> for global entries.</param>
         /// <param name="key">Key name.</param>
         /// <param name="value">The value to write.</param>
+        /// <param name="allowEscChars">
+        /// Indicates whether escape characters are allowed in the INI file.
+        ///</param>
+        /// <param name="allowMultiLine">
+        /// Indicates whether multiline blocks enclosed in '{' and '}' are allowed in the INI file.
+        ///</param>
         /// <exception cref="ArgumentNullException">Thrown when <paramref name="key"/> is <c>null</c>.</exception>
-        public static void WriteToFile<T>(string fileName, string section, string key, T value)
+        public static void WriteToFile<T>(string fileName, string section, string key, T value,
+            bool allowEscChars = false, bool allowMultiLine = false)
         {
             if (key == null)
                 throw new ArgumentNullException(nameof(key));
-        
-            var ini = LoadOrCreate(fileName, Encoding.UTF8);
+
+            var ini = LoadOrCreate(fileName,
+                Encoding.UTF8,
+                StringComparison.InvariantCultureIgnoreCase,
+                allowEscChars,
+                allowMultiLine);
+
             ini.Write<T>(section, key, value);
             ini.Save(fileName, Encoding.UTF8);
         }
+
+        #endregion
+
+        /****************************************** Core of content processing *****************************************/
+
+        #region Internal data access methods
 
         // Method to retrieve all sections in the INI file.
         private IEnumerable<string> GetSections()
@@ -586,7 +678,7 @@ namespace System.Ini
                 if (match.Groups["section"].Success)
                 {
                     // Convert to lowercase if ignore case mode is enabled.
-                    string section = MayBeToLower(match.Groups["value"].Value, _comparison);
+                    string section = NormalizeCase(match.Groups["value"].Value, _comparison);
                     sections.Add(section);
                 }
             }
@@ -617,7 +709,7 @@ namespace System.Ini
 
                 if (inSection && match.Groups["entry"].Success)
                 {
-                    string key = MayBeToLower(match.Groups["key"].Value, _comparison);
+                    string key = NormalizeCase(match.Groups["key"].Value, _comparison);
                     keys.Add(key);
                 }
             }
@@ -626,7 +718,7 @@ namespace System.Ini
         }
 
         // Method to get a value from a specific section and key, with an optional default value.
-        private string GetValue(string section, string key, string defaultValue = null)
+        private string GetValue(string section, string key, string defaultValue = null, bool unwrap = true)
         {
             string value = defaultValue;
             bool emptySection = string.IsNullOrEmpty(section);
@@ -650,6 +742,7 @@ namespace System.Ini
                         continue;
 
                     value = match.Groups["value"].Value;
+                    if (_allowMultiLine && unwrap) value = UnWrap(value);
                     if (_allowEscapeChars) value = UnEscape(value);
 
                     return value;
@@ -660,7 +753,7 @@ namespace System.Ini
         }
 
         // Method to get all values in a specific section.
-        private IEnumerable<string> GetValues(string section)
+        private IEnumerable<string> GetValues(string section, bool unwrap = true)
         {
             List<string> values = new List<string>();
             bool emptySection = string.IsNullOrEmpty(section);
@@ -681,6 +774,7 @@ namespace System.Ini
                 if (inSection && match.Groups["entry"].Success)
                 {
                     string value = match.Groups["value"].Value;
+                    if (_allowMultiLine && unwrap) value = UnWrap(value);
                     if (_allowEscapeChars) value = UnEscape(value);
                     values.Add(value);
                 }
@@ -690,7 +784,7 @@ namespace System.Ini
         }
 
         // Method to get all values associated with a specific key in a section.
-        private IEnumerable<string> GetValues(string section, string key)
+        private IEnumerable<string> GetValues(string section, string key, bool unwrap = true)
         {
             // If the key is empty, return all the values in the section.
             if (string.IsNullOrEmpty(key)) return GetValues(section);
@@ -717,6 +811,7 @@ namespace System.Ini
                         continue;
 
                     string value = match.Groups["value"].Value;
+                    if (_allowMultiLine && unwrap) value = UnWrap(value);
                     if (_allowEscapeChars) value = UnEscape(value);
                     values.Add(value);
                 }
@@ -725,8 +820,12 @@ namespace System.Ini
             return values;
         }
 
+        #endregion
+
+        #region Internal data modification methods
+
         // Sets a single value for a specified key in a given section.
-        private void SetValue(string section, string key, string value)
+        private void SetValue(string section, string key, string value, bool wrap = true)
         {
             bool emptySection = string.IsNullOrEmpty(section);
             bool expectedValue = !string.IsNullOrEmpty(value); // Indicates that value is not set.
@@ -734,8 +833,7 @@ namespace System.Ini
             Match lastMatch = null; // Keep track of the last match for future reference.
             StringBuilder sb = new StringBuilder(_content);
 
-
-            // Escape the value if necessary.
+            if (_allowMultiLine && wrap) value = ToWrap(value);
             if (_allowEscapeChars && expectedValue) value = ToEscape(value);
 
             // Iterate over the content to find the section and key, and set the value.
@@ -817,13 +915,12 @@ namespace System.Ini
         }
 
         // Sets multiple values for a specific key in a section.
-
         /*TODO:
           Fix the bug in the SetValues method or create a separate logic for RemoveKeys 
           that will carefully remove all occurrences of a key without affecting the surrounding text (comments, empty lines). 
           Once this bug is fixed, the test will be completely green.
         */
-        private void SetValues(string section, string key, params string[] values)
+        private void SetValues(string section, string key, bool wrap = true, params string[] values)
         {
             if (values == null) values = new string[0];
             int valueIndex = 0;  // Track the index of the current value being processed.
@@ -880,6 +977,7 @@ namespace System.Ini
         
                             // Remove the old value and insert the new one.
                             sb.Remove(index, length);
+                            if (_allowMultiLine && wrap) newValue = ToWrap(newValue);
                             if (_allowEscapeChars) newValue = ToEscape(newValue);
                             sb.Insert(index, newValue);
         
@@ -939,6 +1037,7 @@ namespace System.Ini
                 while (valueIndex < values.Length)
                 {
                     string value = values[valueIndex++];
+                    if (_allowMultiLine && wrap) value = ToWrap(value);
                     if (_allowEscapeChars) value = ToEscape(value);  // Escape characters if allowed.
         
                     // Insert the new key-value pair into the content.
@@ -951,253 +1050,9 @@ namespace System.Ini
             Content = sb.ToString();
         }
 
-        // Attempts to locate the start index of a JSON object or array associated with the given entry match.
-        // Returns the index of the first '{' or '[' character, or -1 if not found.
-        // The search first checks the value group, then scans following tokens (whitespace, line breaks, comments).
-        private static int FindJsonStart(Match entryMatch)
-        {
-            // 1. Check inside the value group.
-            string value = entryMatch.Groups["value"].Value;
-            int valueStart = 0;
-            while (valueStart < value.Length && char.IsWhiteSpace(value[valueStart]))
-                valueStart++;
+        #endregion
 
-            if (valueStart < value.Length && (value[valueStart] == '{' || value[valueStart] == '['))
-            {
-                return entryMatch.Groups["value"].Index + valueStart;
-            }
-
-            // 2. Check after the entry using full match sequence.
-            Match next = entryMatch.NextMatch();
-            while (next != null && next.Success)
-            {
-                if (next.Groups["whitespace"].Success || next.Groups["linebreaker"].Success || next.Groups["comment"].Success)
-                {
-                    next = next.NextMatch();
-                    continue;
-                }
-
-                string tokenText = next.Value;
-                if (!string.IsNullOrEmpty(tokenText) && (tokenText[0] == '{' || tokenText[0] == '['))
-                {
-                    return next.Index;
-                }
-                break; // First significant token is not JSON start.
-            }
-
-            return -1;
-        }
-
-        // Finds the end index of a JSON object or array starting at the given position.
-        // Returns the index of the matching closing bracket, or -1 on error.
-        private static int FindJsonEnd(string content, int startIndex)
-        {
-            if (startIndex < 0 || startIndex >= content.Length)
-                return -1;
-
-            char first = content[startIndex];
-            if (first != '{' && first != '[')
-                return -1;
-
-            bool inString = false;
-            bool escape = false;
-            Stack<char> brackets = new Stack<char>();
-
-            for (int i = startIndex; i < content.Length; i++)
-            {
-                char c = content[i];
-
-                if (escape)
-                {
-                    escape = false;
-                    continue;
-                }
-
-                if (inString)
-                {
-                    if (c == '\\')
-                        escape = true;
-                    else if (c == '"')
-                        inString = false;
-                    continue;
-                }
-
-                if (c == '"')
-                {
-                    inString = true;
-                    continue;
-                }
-
-                if (c == '{' || c == '[')
-                {
-                    brackets.Push(c);
-                    continue;
-                }
-
-                if (c == '}' || c == ']')
-                {
-                    if (brackets.Count == 0)
-                        return -1;
-
-                    char expected = (c == '}') ? '{' : '[';
-                    if (brackets.Peek() != expected)
-                        return -1;
-
-                    brackets.Pop();
-
-                    if (brackets.Count == 0)
-                        return i;
-                }
-            }
-
-            return -1;
-        }
-
-        // Extracts a raw JSON substring starting at the given index.
-        // Returns the JSON text, or null if the JSON structure is incomplete or invalid.
-        private static string ExtractJson(string content, int startIndex)
-        {
-            int end = FindJsonEnd(content, startIndex);
-            if (end < 0)
-                return null;
-            return content.Substring(startIndex, end - startIndex + 1);
-        }
-
-        // Extracts a JSON object or array associated with the specified section and key.
-        // Returns the raw JSON substring, or defaultValue if not found or malformed.
-        private string GetJson(string section, string key, string defaultValue = null)
-        {
-            // Locate the entry match.
-            bool emptySection = string.IsNullOrEmpty(section);
-            bool inSection = emptySection;
-            Match entryMatch = null;
-
-            for (int i = 0; i < _matches.Count; i++)
-            {
-                Match match = _matches[i];
-                if (match.Groups["section"].Success)
-                {
-                    inSection = match.Groups["value"].Value.Equals(section, _comparison);
-                    if (emptySection) break;
-                    continue;
-                }
-                if (inSection && match.Groups["entry"].Success)
-                {
-                    if (match.Groups["key"].Value.Equals(key, _comparison))
-                    {
-                        entryMatch = match;
-                        break;
-                    }
-                }
-            }
-
-            if (entryMatch == null)
-                return defaultValue;
-
-            int start = FindJsonStart(entryMatch);
-            if (start < 0)
-                return defaultValue;
-
-            return ExtractJson(_content, start) ?? defaultValue;
-        }
-
-        // Writes a JSON value for the specified section and key.
-        // If the key already exists and contains a JSON block, it is replaced preserving surrounding formatting.
-        // If value is null, the entire entry and its associated JSON block are removed.
-        // For non-JSON values, the whole entry is replaced directly.
-        public void SetJson(string section, string key, string value)
-        {
-
-            // Locate the entry match.
-            bool emptySection = string.IsNullOrEmpty(section);
-            bool inSection = emptySection;
-            Match entryMatch = null;
-
-            for (int i = 0; i < _matches.Count; i++)
-            {
-                Match match = _matches[i];
-                if (match.Groups["section"].Success)
-                {
-                    inSection = match.Groups["value"].Value.Equals(section, _comparison);
-                    if (emptySection) break;
-                    continue;
-                }
-                if (inSection && match.Groups["entry"].Success)
-                {
-                    if (match.Groups["key"].Value.Equals(key, _comparison))
-                    {
-                        entryMatch = match;
-                        break;
-                    }
-                }
-            }
-
-            // If entry not found:
-            //   - If value is null, nothing to remove – just return.
-            //   - Otherwise, create a new entry with SetValue (only creation path).
-            if (entryMatch == null)
-            {
-                if (value == null)
-                    return;
-                SetValue(section, key, value);
-                return;
-            }
-
-            // Single StringBuilder for all modifications.
-            StringBuilder sb = new StringBuilder(_content);
-
-            // Special case: remove entry and associated JSON.
-            if (value == null)
-            {
-                int entryStart = entryMatch.Index;
-                int entryEnd = entryMatch.Index + entryMatch.Length;
-
-                int jsonStart = FindJsonStart(entryMatch);
-                if (jsonStart >= 0)
-                {
-                    int jsonEnd = FindJsonEnd(_content, jsonStart);
-                    if (jsonEnd >= 0)
-                    {
-                        int removeEndExclusive = Math.Max(entryEnd, jsonEnd + 1);
-                        sb.Remove(entryStart, removeEndExclusive - entryStart);
-                        Content = sb.ToString();
-                        return;
-                    }
-                }
-
-                // Remove only the entry.
-                sb.Remove(entryMatch.Index, entryMatch.Length);
-                Content = sb.ToString();
-                return;
-            }
-
-            // Non-null value: try to replace JSON block.
-            int start = FindJsonStart(entryMatch);
-            if (start >= 0)
-            {
-                int end = FindJsonEnd(_content, start);
-                if (end >= 0)
-                {
-                    // Replace only the JSON block.
-                    sb.Remove(start, end - start + 1);
-                    sb.Insert(start, value ?? string.Empty);
-                    Content = sb.ToString();
-                    return;
-                }
-            }
-
-            // No valid JSON found – replace the entire entry directly.
-            string newValue = value ?? string.Empty;
-            if (_allowEscapeChars)
-                newValue = ToEscape(newValue);
-            string newLine = $"{key}={newValue}";
-
-            int entryIndex = entryMatch.Index;
-            int entryLength = entryMatch.Length;
-            sb.Remove(entryIndex, entryLength);
-            sb.Insert(entryIndex, newLine);
-            Content = sb.ToString();
-        }
+        #region Internal JSON parsing and serialization methods
 
         // Parses the string containing JSON data.
         private dynamic ParseJson(string json)
@@ -1534,6 +1389,9 @@ namespace System.Ini
             sb.Append(']');
         }
 
+        #endregion
+
+        #region Internal utility and helper methods
 
         // Returns a CultureInfo object that defines the string comparison rules for the specified StringComparison.
         private static CultureInfo GetCultureInfo(StringComparison comparison)
@@ -1748,6 +1606,33 @@ namespace System.Ini
             }
 
             return (char)c;
+        }
+
+        // Removes the outer '{' and '}' from a wrapped value.
+        private static string UnWrap(string value)
+        {
+            if (value.Length >= 2 &&
+                value[0] == '{' &&
+                value[value.Length - 1] == '}')
+            {
+                return value.Substring(1, value.Length - 2);
+            }
+
+            return value;
+        }
+
+        // Wraps a multiline value in '{' and '}'.
+        private static string ToWrap(string value)
+        {
+            for (int i = 0; i < value.Length; i++)
+            {
+                if (value[i] == '\r' || value[i] == '\n')
+                {
+                    return "{" + value + "}";
+                }
+            }
+                    
+            return value;
         }
 
         // Converts a byte array to a hexadecimal string without separators.
@@ -1983,36 +1868,154 @@ namespace System.Ini
             return n ? r ? "\r\n" : "\n" : r ? "\r" : Environment.NewLine;
         }
 
-        // Tries to determine the encoding, checking the presence of signature (BOM) for some popular encodings.
+        // Tries to detect the text encoding using BOM and simple heuristics.
         private static Encoding AutoDetectEncoding(string fileName, Encoding defaultEncoding = null)
         {
-            byte[] bom = new byte[4];
+            const int SampleSize = 4096;
 
+            byte[] buffer = new byte[SampleSize];
+
+            int count;
             using (FileStream fs = File.OpenRead(fileName))
             {
-                int count = fs.Read(bom, 0, 4);
-
-                // Check for BOM (Byte Order Mark)
-                if (count > 2)
-                {
-                    if (bom[0] == 0x2b && bom[1] == 0x2f && bom[2] == 0x76) return Encoding.UTF7;
-                    if (bom[0] == 0xef && bom[1] == 0xbb && bom[2] == 0xbf) return Encoding.UTF8;
-                    if (bom[0] == 0 && bom[1] == 0 && bom[2] == 0xfe && bom[3] == 0xff) return Encoding.UTF32;
-                }
-                else if (count > 1)
-                {
-                    if (bom[0] == 0xff && bom[1] == 0xfe) return Encoding.Unicode; // UTF-16LE
-                    if (bom[0] == 0xfe && bom[1] == 0xff) return Encoding.BigEndianUnicode; // UTF-16BE
-                }
+                count = fs.Read(buffer, 0, buffer.Length);
             }
+
+            if (count >= 4)
+            {
+                // UTF-32 BE
+                if (buffer[0] == 0x00 && buffer[1] == 0x00 &&
+                    buffer[2] == 0xFE && buffer[3] == 0xFF)
+                    return Encoding.GetEncoding("utf-32BE");
+
+                // UTF-32 LE
+                if (buffer[0] == 0xFF && buffer[1] == 0xFE &&
+                    buffer[2] == 0x00 && buffer[3] == 0x00)
+                    return Encoding.UTF32;
+            }
+
+            if (count >= 3)
+            {
+                // UTF-8
+                if (buffer[0] == 0xEF &&
+                    buffer[1] == 0xBB &&
+                    buffer[2] == 0xBF)
+                    return Encoding.UTF8;
+
+#pragma warning disable SYSLIB0001
+                // UTF-7
+                if (buffer[0] == 0x2B &&
+                    buffer[1] == 0x2F &&
+                    buffer[2] == 0x76)
+                    return Encoding.UTF7;
+#pragma warning restore SYSLIB0001
+            }
+
+            if (count >= 2)
+            {
+                // UTF-16 LE
+                if (buffer[0] == 0xFF &&
+                    buffer[1] == 0xFE)
+                    return Encoding.Unicode;
+
+                // UTF-16 BE
+                if (buffer[0] == 0xFE &&
+                    buffer[1] == 0xFF)
+                    return Encoding.BigEndianUnicode;
+            }
+
+            // UTF-16 heuristic.
+            int evenZero = 0;
+            int oddZero = 0;
+
+            for (int i = 0; i + 1 < count; i += 2)
+            {
+                if (buffer[i] == 0)
+                    evenZero++;
+
+                if (buffer[i + 1] == 0)
+                    oddZero++;
+            }
+
+            int pairs = count / 2;
+
+            if (pairs > 8)
+            {
+                if (oddZero > pairs * 8 / 10)
+                    return Encoding.Unicode;
+
+                if (evenZero > pairs * 8 / 10)
+                    return Encoding.BigEndianUnicode;
+            }
+
+            // UTF-8 heuristic.
+            if (IsUtf8(buffer, count))
+                return Encoding.UTF8;
 
             // Default fallback.
             return defaultEncoding ?? Encoding.Default;
         }
 
+        private static bool IsUtf8(byte[] buffer, int count)
+        {
+            bool hasMultibyte = false;
 
-        // Converts a string to lowercase based on the specified comparison.
-        private static string MayBeToLower(string text, StringComparison comparison)
+            for (int i = 0; i < count;)
+            {
+                byte b = buffer[i];
+
+                if (b <= 0x7F)
+                {
+                    i++;
+                    continue;
+                }
+
+                int remaining;
+
+                if ((b & 0xE0) == 0xC0)
+                {
+                    remaining = 1;
+
+                    if (b < 0xC2)
+                        return false;
+                }
+                else if ((b & 0xF0) == 0xE0)
+                {
+                    remaining = 2;
+                }
+                else if ((b & 0xF8) == 0xF0)
+                {
+                    remaining = 3;
+
+                    if (b > 0xF4)
+                        return false;
+                }
+                else
+                {
+                    return false;
+                }
+
+                if (i + remaining >= count)
+                    return false;
+
+                while (remaining-- > 0)
+                {
+                    i++;
+
+                    if ((buffer[i] & 0xC0) != 0x80)
+                        return false;
+                }
+
+                hasMultibyte = true;
+                i++;
+            }
+
+            return hasMultibyte;
+        }
+
+
+        // Normalizes the string case according to the specified comparison mode.
+        private static string NormalizeCase(string text, StringComparison comparison)
         {
             if ((((int)comparison) & 1) != 0)
                 switch (comparison)
@@ -2080,12 +2083,21 @@ namespace System.Ini
             return sb.ToString();
         }
 
+        #endregion
+
+        /************************************************** Public API **************************************************/
+
+        #region Object overrides
 
         /// <inheritdoc/>
         public override string ToString()
         {
             return Content;
         }
+
+        #endregion
+
+        #region Public read methods
 
         /// <summary>
         /// Reads all sections from the INI file.
@@ -2166,49 +2178,6 @@ namespace System.Ini
 
             string format = GetValue(section, key, defaultValue);
             return format == null ? null : string.Format(_culture, format, args);
-        }
-
-        /// <summary>
-        /// Reads a JSON string associated with the specified section and key.
-        /// Returns the raw JSON substring, or <paramref name="defaultValue"/> if not found or malformed.
-        /// </summary>
-        /// <param name="section">Section name. Pass <c>null</c> for global entries.</param>
-        /// <param name="key">Key name.</param>
-        /// <param name="defaultValue">Default value returned if the entry is not found or JSON is invalid.</param>
-        /// <returns>The raw JSON string, or <paramref name="defaultValue"/> if not found.</returns>
-        /// <exception cref="ArgumentNullException">Thrown when <paramref name="key"/> is <c>null</c>.</exception>
-        public string ReadJsonString(string section, string key, string defaultValue = null)
-        {
-            if (key == null)
-                throw new ArgumentNullException(nameof(key));
-            return GetJson(section, key, defaultValue);
-        }
-
-        /// <summary>
-        /// Reads a JSON value from the specified section and key, and returns it as a dynamic object.
-        /// </summary>
-        /// <param name="section">Section name. Pass <c>null</c> for global entries.</param>
-        /// <param name="key">Key name.</param>
-        /// <param name="defaultValue">Default dynamic object returned if entry not found or JSON invalid.</param>
-        /// <returns>A dynamic object representing the JSON, or <paramref name="defaultValue"/> if not found.</returns>
-        /// <exception cref="ArgumentNullException">Thrown when <paramref name="key"/> is <c>null</c>.</exception>
-        public dynamic ReadJsonObject(string section, string key, dynamic defaultValue = null)
-        {
-            if (key == null)
-                throw new ArgumentNullException(nameof(key));
-
-            string json = GetJson(section, key, null);
-            if (json == null)
-                return defaultValue;
-
-            try
-            {
-                return ParseJson(json);
-            }
-            catch
-            {
-                return defaultValue;
-            }
         }
 
         /// <summary>
@@ -2355,6 +2324,33 @@ namespace System.Ini
 
             // Return the default value if the conversion is not possible.
             return defaultValue;
+        }
+
+        /// <summary>
+        /// Reads a JSON value from the specified section and key, and returns it as a dynamic object.
+        /// </summary>
+        /// <param name="section">Section name. Pass <c>null</c> for global entries.</param>
+        /// <param name="key">Key name.</param>
+        /// <param name="defaultValue">Default dynamic object returned if entry not found or JSON invalid.</param>
+        /// <returns>A dynamic object representing the JSON, or <paramref name="defaultValue"/> if not found.</returns>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="key"/> is <c>null</c>.</exception>
+        public dynamic ReadJsonObject(string section, string key, dynamic defaultValue = null)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+
+            string json = GetValue(section, key, null ,false);
+            if (json == null)
+                return defaultValue;
+
+            try
+            {
+                return ParseJson(json);
+            }
+            catch
+            {
+                return defaultValue;
+            }
         }
 
         /// <summary>
@@ -2642,6 +2638,10 @@ namespace System.Ini
             return (T[])ReadArray(section, key, typeof(T), converter);
         }
 
+        #endregion
+
+        #region Public write methods
+
         /// <summary>
         /// Removes the first occurrence of the specified key in the given section from the INI file.
         /// </summary>
@@ -2790,46 +2790,6 @@ namespace System.Ini
         }
 
         /// <summary>
-        /// Writes a JSON string to the specified section and key.
-        /// If the key already exists and contains a JSON block, it is replaced preserving surrounding formatting.
-        /// If <paramref name="value"/> is <c>null</c>, the entry and its associated JSON block are removed.
-        /// </summary>
-        /// <param name="section">Section name. Pass <c>null</c> for global entries.</param>
-        /// <param name="key">Key name.</param>
-        /// <param name="value">JSON string to write, or <c>null</c> to remove.</param>
-        /// <exception cref="ArgumentNullException">Thrown when <paramref name="key"/> is <c>null</c>.</exception>
-        public void WriteJsonString(string section, string key, string value)
-        {
-            if (key == null)
-                throw new ArgumentNullException(nameof(key));
-            SetJson(section, key, value);
-        }
-
-        /// <summary>
-        /// Writes a dynamic object as JSON to the specified section and key.
-        /// If <paramref name="value"/> is <c>null</c>, the entry is removed.
-        /// </summary>
-        /// <param name="section">Section name. Pass <c>null</c> for global entries.</param>
-        /// <param name="key">Key name.</param>
-        /// <param name="value">The dynamic object to serialize to JSON.</param>
-        /// <param name="beautify">If <c>true</c>, formats JSON with indentation.</param>
-        /// <exception cref="ArgumentNullException">Thrown when <paramref name="key"/> is <c>null</c>.</exception>
-        public void WriteJsonObject(string section, string key, dynamic value, bool beautify = false)
-        {
-            if (key == null)
-                throw new ArgumentNullException(nameof(key));
-
-            if (value == null)
-            {
-                SetJson(section, key, null);
-                return;
-            }
-
-            string json = SerializeJson(value, beautify);
-            SetJson(section, key, json);
-        }
-
-        /// <summary>
         /// Writes a strings associated with the specified section and key to the INI file.
         /// </summary>
         /// <param name="section">
@@ -2849,7 +2809,7 @@ namespace System.Ini
             if (key == null)
                 throw new ArgumentNullException(nameof(key));
 
-            SetValues(section, key, values);
+            SetValues(section, key, wrap: true, values);
         }
 
         /// <summary>
@@ -2912,6 +2872,32 @@ namespace System.Ini
             // Write the converted string value to the INI file.
             WriteString(section, key, str);
         }
+
+        /// <summary>
+        /// Writes a dynamic object as JSON to the specified section and key.
+        /// If <paramref name="value"/> is <c>null</c>, the entry is removed.
+        /// </summary>
+        /// <param name="section">Section name. Pass <c>null</c> for global entries.</param>
+        /// <param name="key">Key name.</param>
+        /// <param name="value">The dynamic object to serialize to JSON.</param>
+        /// <param name="beautify">If <c>true</c>, formats JSON with indentation.</param>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="key"/> is <c>null</c>.</exception>
+        public void WriteJsonObject(string section, string key, dynamic value, bool beautify = false)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+
+            if (value == null)
+            {
+                SetValue(section, key, null, false);
+                return;
+            }
+
+            string json = SerializeJson(value, beautify);
+            SetValue(section, key, json, false);
+        }
+
+
 
         /// <summary>
         /// Writes a value associated with the specified section and key to the INI file.
@@ -3929,5 +3915,7 @@ namespace System.Ini
         {
             Write(section, key, value);
         }
+
+        #endregion
     }
 }
