@@ -298,22 +298,22 @@ namespace System.Ini
             _trueValues = new HashSet<string>(comparer) { "true", "yes", "on", "enable", "1" };
             _falseValues = new HashSet<string>(comparer) { "false", "no", "off", "disable", "0" };
             _iniRegex = new Regex(@"(?=\S)(?<text>(?<comment>(?<open>[#;]+)(?:[^\S\r\n]*)(?<value>.+))|" +
-                               @"(?<section>(?<open>\[)(?:\s*)(?<value>[^\]]*\S+)(?:[^\S\r\n]*)(?<close>\]))|" +
-                               (allowMultiLine
-                               ? @"(?<entry>(?<key>[^=\r\n\ [\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:\s*(?<value>\{(?:[^{}""]+|""(?:\\.|[^""])*""|(?<o>\{)|(?<-o>\}))*(?(o)(?!))\})|((?:[^\S\r\n]*)(?<value>[^#;\r\n]*))))|"
-                               : @"(?<entry>(?<key>[^=\r\n\ [\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:[^\S\r\n]*)(?<value>[^#;\r\n]*))|") +
-                               @"(?<undefined>.+))(?<=\S)|" +
-                               @"(?<linebreaker>\r\n|\n)|" +
-                               @"(?<whitespace>[^\S\r\n]+)",
-                               regexOptions);
+                                    @"(?<section>(?<open>\[)(?:\s*)(?<value>[^\]]*\S+)(?:[^\S\r\n]*)(?<close>\]))|" +
+                                    (allowMultiLine
+                                    ? @"(?<entry>(?<key>[^=\r\n\ [\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:\s*(?<value>\{(?:[^{}""]+|""(?:\\.|[^""])*""|(?<o>\{)|(?<-o>\}))*(?(o)(?!))\})|((?:[^\S\r\n]*)(?<value>[^#;\r\n]*))))|"
+                                    : @"(?<entry>(?<key>[^=\r\n\ [\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:[^\S\r\n]*)(?<value>[^#;\r\n]*))|") +
+                                    @"(?<undefined>.+))(?<=\S)|" +
+                                    @"(?<linebreaker>\r\n|\n)|" +
+                                    @"(?<whitespace>[^\S\r\n]+)",
+                                    regexOptions);
             _jsonRegex = new Regex(
-                @"(?<Comment>//.*|/\*.*?\*/)|" +
-                @"(?<key>""[^""\\]*(?:\\.[^""\\]*)*"")(?=(?:\s|//.*|/\*.*?\*/)*:)|" +
-                @"(?<value>(?<bool>true)|(?<bool>false)|(?<null>null)|""(?<string>[^""\\]*(?:\\.[^""\\]*)*)""|(?<number>-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?))|" +
-                @"(?<value_sep>:)|(?<array_open>\[)|(?<array_sep>,)|(?<array_close>\])|" +
-                @"(?<object_open>{)|(?<object_close>})|" +
-                @"(?<whitespace>[^\S\r\n]+)|(?<newline>[\r\n]+)|(?<undefined>.+)",
-                regexOptions);
+                                    @"(?<Comment>//.*|/\*.*?\*/)|" +
+                                    @"(?<key>""[^""\\]*(?:\\.[^""\\]*)*"")(?=(?:\s|//.*|/\*.*?\*/)*:)|" +
+                                    @"(?<value>(?<bool>true)|(?<bool>false)|(?<null>null)|""(?<string>[^""\\]*(?:\\.[^""\\]*)*)""|(?<number>-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?))|" +
+                                    @"(?<value_sep>:)|(?<array_open>\[)|(?<array_sep>,)|(?<array_close>\])|" +
+                                    @"(?<object_open>{)|(?<object_close>})|" +
+                                    @"(?<whitespace>[^\S\r\n]+)|(?<newline>[\r\n]+)|(?<undefined>.+)",
+                                    regexOptions);
             Content = content;
         }
 
