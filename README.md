@@ -108,9 +108,7 @@ config = {
 }
 
 [Data]
-json =
-; comment before JSON
-[1, 2, 3, 4]
+json = [1, 2, 3, 4]
 ```
 
 ### Read/Write JSON as Raw String
@@ -120,7 +118,7 @@ string json = ini.ReadJsonString("App", "config", "{}");
 ini.WriteJsonString("App", "config", "{\"timeout\":60,\"retry\":10}");
 ```
 
-### Read/Write JSON as Dynamic Object
+### Read/Write JSON as Object
 
 ```csharp
 // Read JSON as a dictionary/object.
