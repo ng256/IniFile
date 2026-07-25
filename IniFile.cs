@@ -2625,8 +2625,13 @@ namespace System.Ini
                     string value = match.Groups["value"].Value;
 
                     // Unwrap/unescape if needed
-                    if (_allowMultiLine) value = UnWrap(value);
-                    if (_allowEscapeChars) value = UnEscape(value);
+                    if (_allowEscapeChars)
+                        value = UnEscape(value);
+                    else
+                    {
+                        string lineBreaker = _allowMultiLine ? _lineBreaker : " ";
+                        if (_allowMultiLine) value = UnWrap(value);
+                    }
 
                     // Normalize key case
                     key = NormalizeCase(key, _comparison);
@@ -2691,8 +2696,13 @@ namespace System.Ini
                 {
                     string key = match.Groups["key"].Value;
                     string value = match.Groups["value"].Value;
-                    if (_allowMultiLine) value = UnWrap(value);
-                    if (_allowEscapeChars) value = UnEscape(value);
+                    /*if (_allowEscapeChars) 
+                        value = UnEscape(value);
+                    else
+                    {
+                        string lineBreaker = _allowMultiLine ? _lineBreaker : " ";
+                        if (_allowMultiLine) value = UnWrap(value);
+                    }*/
 
                     if (inGlobal)
                     {
