@@ -186,7 +186,13 @@ namespace System.Ini
 
         #region Private fields
 
-        private const int MaxJsonDepth = 64;
+        // Maximum allowed nesting depth for recursive processing.
+        [NonSerialized]
+        private const int MaxNestingDepth = 64;
+
+        // Default capacity for newly created internal collections.
+        [NonSerialized]
+        private const int DefaultCapacity = 16;
 
         // Private field for storing the content of the INI file.
         private string _content;
@@ -233,8 +239,6 @@ namespace System.Ini
         // Array containing the characters that are not allowed in path names.
         [NonSerialized]
         private static readonly char[] _invalidPathChars = Path.GetInvalidPathChars();
-
-
 
         #endregion
 
@@ -292,7 +296,7 @@ namespace System.Ini
             _allowEscapeChars = allowEscChars;
             _allowMultiLine = allowMultiLine;
             _lineBreaker = AutoDetectLineBreaker(content);
-            _matches = new List<Match>(64);
+            _matches = new List<Match>(DefaultCapacity);
             StringComparer comparer = GetComparer(comparison);
             RegexOptions regexOptions = GetRegexOptions(comparison, RegexOptions.Compiled | RegexOptions.ExplicitCapture);
             _trueValues = new HashSet<string>(comparer) { "true", "yes", "on", "enable", "1" };
@@ -673,7 +677,7 @@ namespace System.Ini
             bool allowMultiLine = true)
         {
             if (string.IsNullOrEmpty(fileName) || !File.Exists(fileName))
-                return new Dictionary<string, Dictionary<string, List<string>>>();
+                return new Dictionary<string, Dictionary<string, List<string>>>(DefaultCapacity, GetComparer(comparison));
 
             try
             {
@@ -685,7 +689,7 @@ namespace System.Ini
             }
             catch
             {
-                return new Dictionary<string, Dictionary<string, List<string>>>();
+                return new Dictionary<string, Dictionary<string, List<string>>>(DefaultCapacity, GetComparer(comparison));
             }
         }
 
@@ -790,7 +794,7 @@ namespace System.Ini
         // Method to get all values in a specific section.
         private IEnumerable<string> GetValues(string section, bool unwrap = true)
         {
-            List<string> values = new List<string>();
+            List<string> values = new List<string>(DefaultCapacity);
             bool emptySection = string.IsNullOrEmpty(section);
             bool inSection = emptySection;
 
@@ -824,7 +828,7 @@ namespace System.Ini
             // If the key is empty, return all the values in the section.
             if (string.IsNullOrEmpty(key)) return GetValues(section);
 
-            List<string> values = new List<string>();
+            List<string> values = new List<string>(DefaultCapacity);
             bool emptySection = string.IsNullOrEmpty(section);
             bool inSection = emptySection;
 
@@ -972,7 +976,7 @@ namespace System.Ini
             int offset = 0; // Offset to account for changes in length during replacements.
 
             // List to store all matches of the target key within the target section.
-            List<Match> keyMatches = new List<Match>();
+            List<Match> keyMatches = new List<Match>(DefaultCapacity);
 
             // Iterate over the ini content and process each match for section and entry
             for (int i = 0; i < _matches.Count; i++)
@@ -1106,8 +1110,6 @@ namespace System.Ini
         #endregion
 
         #region Internal JSON parsing and serialization methods
-
-        private const int MaxNestingDepth = 64;
 
         // Parses the string containing JSON data.
         private object ParseJson(string json)
@@ -1259,7 +1261,7 @@ namespace System.Ini
         {
             result = null;
 
-            var dict = new Dictionary<string, object>();
+            var dict = new Dictionary<string, object>(DefaultCapacity, GetComparer(_comparison));
             bool first = true;
 
             while (index < matches.Count)
@@ -1358,7 +1360,7 @@ namespace System.Ini
         {
             result = null;
 
-            List<object> list = new List<object>();
+            List<object> list = new List<object>(DefaultCapacity);
 
             // Indicates whether the next element is the first one in the array.
             // The first element is not expected to be preceded by a comma.
@@ -1698,7 +1700,7 @@ namespace System.Ini
             // If it's already an ExpandoObject, convert to Dictionary<string, object>.
             if (type == typeof(ExpandoObject))
             {
-                var dict = new Dictionary<string, object>();
+                var dict = new Dictionary<string, object>(DefaultCapacity);
                 foreach (var kv in (IDictionary<string, object>)value)
                     dict[kv.Key] = ConvertFromDynamic(kv.Value);
                 return dict;
@@ -1717,7 +1719,7 @@ namespace System.Ini
             // If it's a generic IEnumerable (like List<>), convert to array.
             if (value is IEnumerable enumerable && !(value is string))
             {
-                var list = new List<object>();
+                var list = new List<object>(DefaultCapacity);
                 foreach (var item in enumerable)
                     list.Add(ConvertFromDynamic(item));
                 return list.ToArray();
@@ -1802,7 +1804,7 @@ namespace System.Ini
             if (isFlags)
             {
                 // For flags, we need to collect all set flag names.
-                List<string> names = new List<string>();
+                List<string> names = new List<string>(DefaultCapacity);
                 Array values = Enum.GetValues(enumType);
                 // Process in descending order to handle combined flags correctly.
                 for (int i = values.Length - 1; i >= 0; i--)
@@ -2587,7 +2589,7 @@ namespace System.Ini
         public Dictionary<string, Dictionary<string, List<string>>> ExportToDictionary()
         {
             StringComparer comparer = GetComparer(_comparison);
-            var result = new Dictionary<string, Dictionary<string, List<string>>>(comparer);
+            var result = new Dictionary<string, Dictionary<string, List<string>>>(DefaultCapacity, comparer);
 
             string currentSection = string.Empty; // global
             Dictionary<string, List<string>> currentDict = null;
@@ -2605,7 +2607,7 @@ namespace System.Ini
                     // Add new section if not exists
                     if (!result.TryGetValue(sectionName, out currentDict))
                     {
-                        currentDict = new Dictionary<string, List<string>>(comparer);
+                        currentDict = new Dictionary<string, List<string>>(DefaultCapacity, comparer);
                         result[sectionName] = currentDict;
                     }
                     currentSection = sectionName;
@@ -2620,7 +2622,7 @@ namespace System.Ini
                         // Global section
                         if (!result.TryGetValue(string.Empty, out currentDict))
                         {
-                            currentDict = new Dictionary<string, List<string>>(comparer);
+                            currentDict = new Dictionary<string, List<string>>(DefaultCapacity, comparer);
                             result[string.Empty] = currentDict;
                         }
                     }
@@ -2637,7 +2639,7 @@ namespace System.Ini
 
                     if (!currentDict.TryGetValue(key, out List<string> values))
                     {
-                        values = new List<string>();
+                        values = new List<string>(DefaultCapacity);
                         currentDict[key] = values;
                     }
                     values.Add(value);
@@ -2668,9 +2670,9 @@ namespace System.Ini
             // Or we can build lists.
             // Let's build a list of all entries with their section.
 
-            var globalEntries = new List<KeyValuePair<string, string>>();
-            var sectionEntries = new Dictionary<string, List<KeyValuePair<string, string>>>(StringComparer.Ordinal);
-            var sectionOrder = new List<string>();
+            var globalEntries = new List<KeyValuePair<string, string>>(DefaultCapacity);
+            var sectionEntries = new Dictionary<string, List<KeyValuePair<string, string>>>(GetComparer(_comparison));
+            var sectionOrder = new List<string>(DefaultCapacity);
 
             for (int i = 0; i < _matches.Count; i++)
             {
@@ -2681,7 +2683,7 @@ namespace System.Ini
                     string section = match.Groups["value"].Value;
                     if (!sectionEntries.ContainsKey(section))
                     {
-                        sectionEntries[section] = new List<KeyValuePair<string, string>>();
+                        sectionEntries[section] = new List<KeyValuePair<string, string>>(DefaultCapacity);
                         sectionOrder.Add(section);
                     }
                     currentSection = section;
