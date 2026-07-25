@@ -44,6 +44,7 @@ using System.ComponentModel;
 using System.Reflection;
 using System.Diagnostics;
 using System.Collections;
+using System.Dynamic;
 
 #nullable disable
 
@@ -255,7 +256,7 @@ namespace System.Ini
                 if (string.IsNullOrEmpty(value)) return;
 
                 // Iterate over matches using the regex pattern and collect sections and entries names.
-                for (Match match = _iniRegex.Match(_content); match.Success; match = match.NextMatch())
+                for (Match match = _iniRegex.Match(value); match.Success; match = match.NextMatch())
                 {
                     GroupCollection groups = match.Groups;
                     if (groups["section"].Success || groups["entry"].Success)
@@ -650,6 +651,44 @@ namespace System.Ini
             ini.Save(fileName, Encoding.UTF8);
         }
 
+        /// <summary>
+        /// Exports the content of the specified INI file to a dictionary mapping section names to a dictionary
+        /// of keys with lists of their associated values (preserving order and duplicates).
+        /// </summary>
+        /// <param name="fileName">Path to the INI file.</param>
+        /// <param name="encoding">The encoding to use when reading the file. If <c>null</c>, auto-detection is attempted.</param>
+        /// <param name="comparison">String comparison rules for case sensitivity.</param>
+        /// <param name="allowEscChars">Whether to process escape sequences in values.</param>
+        /// <param name="allowMultiLine">Whether to support multiline values wrapped in braces.</param>
+        /// <returns>
+        /// A dictionary where the key is the section name (empty string for global entries)
+        /// and the value is a dictionary of key > list of values for that section.
+        /// Returns an empty dictionary if the file does not exist or cannot be read.
+        /// </returns>
+        public static Dictionary<string, Dictionary<string, List<string>>> ExportToDictionaryFile(
+            string fileName,
+            Encoding encoding = null,
+            StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
+            bool allowEscChars = true,
+            bool allowMultiLine = true)
+        {
+            if (string.IsNullOrEmpty(fileName) || !File.Exists(fileName))
+                return new Dictionary<string, Dictionary<string, List<string>>>();
+
+            try
+            {
+                using (var reader = new StreamReader(fileName, encoding ?? AutoDetectEncoding(fileName, Encoding.UTF8)))
+                {
+                    var ini = Load(reader, comparison, allowEscChars, allowMultiLine);
+                    return ini.ExportToDictionary();
+                }
+            }
+            catch
+            {
+                return new Dictionary<string, Dictionary<string, List<string>>>();
+            }
+        }
+
         #endregion
 
         /****************************************** Core of content processing *****************************************/
@@ -825,8 +864,15 @@ namespace System.Ini
             Match lastMatch = null; // Keep track of the last match for future reference.
             StringBuilder sb = new StringBuilder(_content);
 
-            if (_allowMultiLine && wrap) value = ToWrap(value);
-            if (_allowEscapeChars && expectedValue && escape) value = ToEscape(value);
+            // Prepare the value for writing.
+            if (_allowEscapeChars && escape && expectedValue)
+                value = ToEscape(value);
+            else
+            {
+                string lineBreaker = _allowMultiLine ? _lineBreaker : " ";
+                value = NormalizeLineBreaker(value, lineBreaker);
+                if (_allowMultiLine && wrap) value = ToWrap(value);
+            }
 
             // Iterate over the content to find the section and key, and set the value.
             for (int i = 0; i < _matches.Count; i++)
@@ -858,10 +904,8 @@ namespace System.Ini
 
                     if (expectedValue)
                     {
-                        // Remove the old value.
+                        // Remove the old value and insert the new value in its place..
                         sb.Remove(index, length);
-
-                        // Insert the new value in its place.
                         sb.Insert(index, value);
                     }
                     else
@@ -969,8 +1013,14 @@ namespace System.Ini
 
                             // Remove the old value and insert the new one.
                             sb.Remove(index, length);
-                            if (_allowMultiLine && wrap) newValue = ToWrap(newValue);
-                            if (_allowEscapeChars) newValue = ToEscape(newValue);
+                            if (_allowEscapeChars)
+                                newValue = ToEscape(newValue);
+                            else
+                            {
+                                string lineBreaker = _allowMultiLine ? _lineBreaker : " ";
+                                newValue = NormalizeLineBreaker(newValue, lineBreaker);
+                                if (_allowMultiLine && wrap) newValue = ToWrap(newValue);
+                            }
                             sb.Insert(index, newValue);
 
                             // Update the offset for future replacements.
@@ -1029,8 +1079,15 @@ namespace System.Ini
                 while (valueIndex < values.Length)
                 {
                     string value = values[valueIndex++];
-                    if (_allowMultiLine && wrap) value = ToWrap(value);
-                    if (_allowEscapeChars) value = ToEscape(value);  // Escape characters if allowed.
+                    if (_allowEscapeChars)
+                        value = ToEscape(value);
+                    else
+                    {
+                        string lineBreaker = _allowMultiLine ? _lineBreaker : " ";
+                        value = NormalizeLineBreaker(value, lineBreaker);
+                        if (_allowMultiLine && wrap) value = ToWrap(value);
+                    }
+
 
                     // Insert the new key-value pair into the content.
                     string line = $"{key}={value}";
@@ -1600,6 +1657,72 @@ namespace System.Ini
 
         #region Internal utility and helper methods
 
+        private static ExpandoObject ConvertToExpando(IDictionary<string, object> dict)
+        {
+            var expando = new ExpandoObject();
+            var expandoDict = (IDictionary<string, object>)expando;
+            foreach (var kvp in dict)
+            {
+                if (kvp.Value is IDictionary<string, object> nestedDict)
+                    expandoDict[kvp.Key] = ConvertToExpando(nestedDict);
+                else if (kvp.Value is object[] array)
+                    expandoDict[kvp.Key] = ConvertArray(array);
+                else
+                    expandoDict[kvp.Key] = kvp.Value;
+            }
+            return expando;
+        }
+
+        private static object[] ConvertArray(object[] array)
+        {
+            for (int i = 0; i < array.Length; i++)
+            {
+                if (array[i] is IDictionary<string, object> dict)
+                    array[i] = ConvertToExpando(dict);
+                else if (array[i] is object[] nestedArray)
+                    array[i] = ConvertArray(nestedArray);
+            }
+            return array;
+        }
+
+        // Helper: convert dynamic (which may be ExpandoObject) to a plain object (Dictionary, array, primitive).
+        private static object ConvertFromDynamic(dynamic value)
+        {
+            if (value == null) return null;
+            Type type = value.GetType();
+
+            // If it's already an ExpandoObject, convert to Dictionary<string, object>.
+            if (type == typeof(ExpandoObject))
+            {
+                var dict = new Dictionary<string, object>();
+                foreach (var kv in (IDictionary<string, object>)value)
+                    dict[kv.Key] = ConvertFromDynamic(kv.Value);
+                return dict;
+            }
+
+            // If it's an array (object[]), convert each element.
+            if (type.IsArray)
+            {
+                var arr = (object[])value;
+                var newArr = new object[arr.Length];
+                for (int i = 0; i < arr.Length; i++)
+                    newArr[i] = ConvertFromDynamic(arr[i]);
+                return newArr;
+            }
+
+            // If it's a generic IEnumerable (like List<>), convert to array.
+            if (value is IEnumerable enumerable && !(value is string))
+            {
+                var list = new List<object>();
+                foreach (var item in enumerable)
+                    list.Add(ConvertFromDynamic(item));
+                return list.ToArray();
+            }
+
+            // Primitive or other – return as is.
+            return value;
+        }
+
         // Returns a CultureInfo object that defines the string comparison rules for the specified StringComparison.
         private static CultureInfo GetCultureInfo(StringComparison comparison)
         {
@@ -1931,31 +2054,44 @@ namespace System.Ini
             return (char)c;
         }
 
-        // Removes the outer '{' and '}' from a wrapped value.
+        // // Removes the outer '{' and '}' from a wrapped value and trims spaces and tabs inside the braces.
         private static string UnWrap(string value)
         {
             if (value == null) return null;
 
-            if (value.Length >= 2 &&
-                value[0] == '{' &&
-                value[value.Length - 1] == '}')
-            {
-                return value.Substring(1, value.Length - 2);
-            }
+            int length = value.Length;
+            if (length < 2 || value[0] != '{' || value[length - 1] != '}')
+                return value;
 
-            return value;
+            // Find the first non-space/tab character after the opening brace.
+            int start = 1;
+            while (start < length - 1 && (value[start] == ' ' || value[start] == '\t'))
+                start++;
+
+            // Find the last non-space/tab character before the closing brace.
+            int end = length - 2;
+            while (end >= start && (value[end] == ' ' || value[end] == '\t'))
+                end--;
+
+            // If there is no content, return empty string.
+            if (start > end)
+                return string.Empty;
+
+            // Extract the trimmed inner content (single allocation).
+            return value.Substring(start, end - start + 1);
         }
 
         // Wraps a multiline value in '{' and '}'.
-        private static string ToWrap(string value)
+        private string ToWrap(string value)
         {
             if (value == null) return null;
 
             for (int i = 0; i < value.Length; i++)
             {
-                if (value[i] == '\r' || value[i] == '\n')
+                char c = value[i];
+                if (c == '\r' || c == '\n')
                 {
-                    return "{" + value + "}";
+                    return string.Concat("{", _lineBreaker, value, _lineBreaker, "}");
                 }
             }
 
@@ -2267,6 +2403,65 @@ namespace System.Ini
                 }
 
             return text;
+        }
+
+        // Replaces all line break sequences with the specified line breaker.
+        private static string NormalizeLineBreaker(string value, string lineBreaker)
+        {
+            if (value == null) return null;
+            if (lineBreaker == null) lineBreaker = Environment.NewLine;
+
+            int length = value.Length;
+            bool normalize = false;
+
+            // Check whether normalization is required.
+            for (int i = 0; i < length && !normalize; i++)
+            {
+                char c = value[i];
+
+                if (c == '\r')
+                {
+                    normalize =
+                        lineBreaker != "\r" ||
+                        (i + 1 < length && value[i + 1] == '\n');
+                }
+                else if (c == '\n')
+                {
+                    normalize =
+                        lineBreaker != "\n" ||
+                        (i == 0 || value[i - 1] != '\r');
+                }
+            }
+
+            if (!normalize)
+                return value;
+
+            StringBuilder sb = new StringBuilder(length);
+
+            for (int i = 0; i < length; i++)
+            {
+                char c = value[i];
+
+                if (c == '\r')
+                {
+                    // Skip '\n' in CRLF.
+                    if (i + 1 < length && value[i + 1] == '\n')
+                        i++;
+
+                    sb.Append(lineBreaker);
+                }
+                else if (c == '\n')
+                {
+                    // Standalone LF.
+                    sb.Append(lineBreaker);
+                }
+                else
+                {
+                    sb.Append(c);
+                }
+            }
+
+            return sb.ToString();
         }
 
         // Checks whether the fileName string contains invalid characters for the path.
@@ -2809,6 +3004,39 @@ namespace System.Ini
             {
                 object result = ParseJson(json);
                 return result ?? defaultValue;
+            }
+            catch
+            {
+                return defaultValue;
+            }
+        }
+
+        /// <summary>
+        /// Reads a JSON value from the specified section and key, and returns it as an dynamic object.
+        /// </summary>
+        /// <param name="section">Section name. Pass <c>null</c> for global entries.</param>
+        /// <param name="key">Key name.</param>
+        /// <param name="defaultValue">Default object returned if entry not found or JSON invalid.</param>
+        /// <returns>An object representing the JSON, or <paramref name="defaultValue"/> if not found.</returns>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="key"/> is <c>null</c>.</exception>
+        public dynamic ReadJsonDynamicObject(string section, string key, dynamic defaultValue = null)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+
+            string json = GetValue(section, key, null, false);
+            if (json == null)
+                return defaultValue;
+
+            try
+            {
+                object result = ParseJson(json);
+                if (result == null) return defaultValue;
+                if (result is IDictionary<string, object> dict)
+                    return ConvertToExpando(dict);
+                if (result is object[] arr)
+                    return ConvertArray(arr);
+                return result;
             }
             catch
             {
@@ -3726,7 +3954,33 @@ namespace System.Ini
             SetValue(section, key, json, false, false);
         }
 
+        /// <summary>
+        /// Writes a dynamic object as JSON to the specified section and key.
+        /// The object can be any .NET object, ExpandoObject, or Dictionary.
+        /// If <paramref name="value"/> is <c>null</c>, the entry is removed.
+        /// </summary>
+        /// <param name="section">Section name. Pass <c>null</c> for global entries.</param>
+        /// <param name="key">Key name.</param>
+        /// <param name="value">The dynamic object to serialize to JSON.</param>
+        /// <param name="beautify">If <c>true</c>, formats JSON with indentation.</param>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="key"/> is <c>null</c>.</exception>
+        public void WriteJsonDynamicObject(string section, string key, dynamic value, bool beautify = false)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
 
+            if (value == null)
+            {
+                SetValue(section, key, null, false, false);
+                return;
+            }
+
+            // Convert dynamic to a regular object for serialization.
+            // If it's ExpandoObject, we need to convert to Dictionary.
+            object obj = ConvertFromDynamic(value);
+            string json = SerializeJson(obj, beautify);
+            SetValue(section, key, json, false, false);
+        }
 
         /// <summary>
         /// Writes a value associated with the specified section and key to the INI file.
