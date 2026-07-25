@@ -62,7 +62,6 @@ using System.ComponentModel;
 using System.Reflection;
 using System.Diagnostics;
 using System.Collections;
-using System.Dynamic;
 
 #nullable disable
 
@@ -310,8 +309,7 @@ namespace System.Ini
             _allowEscapeChars = allowEscChars;
             _allowMultiLine = allowMultiLine;
             _lineBreaker = AutoDetectLineBreaker(content);
-            _matches = new List<Match>(16);
-            Content = content;
+            _matches = new List<Match>(64);
             StringComparer comparer = GetComparer(comparison);
             RegexOptions regexOptions = GetRegexOptions(comparison, RegexOptions.Compiled | RegexOptions.ExplicitCapture);
             _trueValues = new HashSet<string>(comparer) { "true", "yes", "on", "enable", "1" };
@@ -326,13 +324,14 @@ namespace System.Ini
                                @"(?<whitespace>[^\S\r\n]+)",
                                regexOptions);
             _jsonRegex = new Regex(
-                                @"(?<Comment>//.*|/\*.*?\*/)|" +
-                                @"(?<key>""[^""\\]*(?:\\.[^""\\]*)*"")(?=(?:\s|//.*|/\*.*?\*/)*:)|" +
-                                @"(?<value>(?<bool>true)|(?<bool>false)|(?<null>null)|""(?<string>[^""\\]*(?:\\.[^""\\]*)*)""|(?<number>-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?))|" +
-                                @"(?<value_sep>:)|(?<array_open>\[)|(?<array_sep>,)|(?<array_close>\])|" +
-                                @"(?<object_open>{)|(?<object_close>})|" +
-                                @"(?<whitespace>[^\S\r\n]+)|(?<newline>[\r\n]+)|(?<undefined>.*)",
-                                regexOptions);
+                @"(?<Comment>//.*|/\*.*?\*/)|" +
+                @"(?<key>""[^""\\]*(?:\\.[^""\\]*)*"")(?=(?:\s|//.*|/\*.*?\*/)*:)|" +
+                @"(?<value>(?<bool>true)|(?<bool>false)|(?<null>null)|""(?<string>[^""\\]*(?:\\.[^""\\]*)*)""|(?<number>-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?))|" +
+                @"(?<value_sep>:)|(?<array_open>\[)|(?<array_sep>,)|(?<array_close>\])|" +
+                @"(?<object_open>{)|(?<object_close>})|" +
+                @"(?<whitespace>[^\S\r\n]+)|(?<newline>[\r\n]+)|(?<undefined>.+)",
+                regexOptions);
+            Content = content;
         }
 
         #endregion
@@ -355,7 +354,7 @@ namespace System.Ini
         /// An instance of <see cref="IniFile"/> initialized with the specified settings.
         /// </returns>
         public static IniFile Create(StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
-            bool allowEscChars = false, bool allowMultiLine = false)
+            bool allowEscChars = true, bool allowMultiLine = true)
         {
             return new IniFile(string.Empty, comparison, allowEscChars, allowMultiLine);
         }
@@ -380,7 +379,7 @@ namespace System.Ini
         /// </returns>
         public static IniFile Load(TextReader reader,
             StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
-            bool allowEscChars = false, bool allowMultiLine = false)
+            bool allowEscChars = true, bool allowMultiLine = true)
         {
             return new IniFile(reader.ReadToEnd(), comparison, allowEscChars, allowMultiLine);
         }
@@ -408,7 +407,7 @@ namespace System.Ini
         /// </returns>
         public static IniFile Load(Stream stream, Encoding encoding = null,
             StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
-            bool allowEscChars = false, bool allowMultiLine = false)
+            bool allowEscChars = true, bool allowMultiLine = true)
         {
             using (StreamReader reader = new StreamReader(stream ?? throw new ArgumentNullException(nameof(stream)), encoding ?? Encoding.UTF8))
                 return new IniFile(reader.ReadToEnd(), comparison, allowEscChars, allowMultiLine);
@@ -438,7 +437,7 @@ namespace System.Ini
         public static IniFile Load(string fileName,
             Encoding encoding,
             StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
-            bool allowEscChars = false, bool allowMultiLine = false)
+            bool allowEscChars = true, bool allowMultiLine = true)
         {
             string filePath = GetFullPath(fileName, true);
             return new IniFile(File.ReadAllText(filePath, encoding ?? AutoDetectEncoding(filePath, Encoding.UTF8)),
@@ -465,7 +464,7 @@ namespace System.Ini
         /// </returns>
         public static IniFile Load(string fileName,
             StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
-            bool allowEscChars = false, bool allowMuliLine = false)
+            bool allowEscChars = true, bool allowMultiLine = true)
         {
             if (fileName == null)
                 throw new ArgumentNullException(nameof(fileName));
@@ -474,7 +473,7 @@ namespace System.Ini
             Encoding encoding = AutoDetectEncoding(filePath, Encoding.UTF8);
 
             return new IniFile(File.ReadAllText(filePath, encoding),
-                comparison, allowEscChars, allowMuliLine);
+                comparison, allowEscChars, allowMultiLine);
         }
 
         /// <summary>
@@ -500,7 +499,7 @@ namespace System.Ini
         /// </returns>
         public static IniFile LoadOrCreate(string fileName, Encoding encoding,
             StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
-            bool allowEscChars = false, bool allowMultiLine = false)
+            bool allowEscChars = true, bool allowMultiLine = true)
         {
             if (fileName == null)
                 throw new ArgumentNullException(nameof(fileName));
@@ -536,7 +535,7 @@ namespace System.Ini
         /// </returns>
         public static IniFile LoadOrCreate(string fileName,
             StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
-            bool allowEscChars = false, bool allowMultiLine = false)
+            bool allowEscChars = true, bool allowMultiLine = true)
         {
             if (fileName == null)
                 throw new ArgumentNullException(nameof(fileName));
@@ -836,7 +835,7 @@ namespace System.Ini
         #region Internal data modification methods
 
         // Sets a single value for a specified key in a given section.
-        private void SetValue(string section, string key, string value, bool wrap = true)
+        private void SetValue(string section, string key, string value, bool wrap = true, bool escape = true)
         {
             bool emptySection = string.IsNullOrEmpty(section);
             bool expectedValue = !string.IsNullOrEmpty(value); // Indicates that value is not set.
@@ -845,7 +844,7 @@ namespace System.Ini
             StringBuilder sb = new StringBuilder(_content);
 
             if (_allowMultiLine && wrap) value = ToWrap(value);
-            if (_allowEscapeChars && expectedValue) value = ToEscape(value);
+            if (_allowEscapeChars && expectedValue && escape) value = ToEscape(value);
 
             // Iterate over the content to find the section and key, and set the value.
             for (int i = 0; i < _matches.Count; i++)
@@ -1681,8 +1680,7 @@ namespace System.Ini
         // For flags enums, returns a comma-separated list of names.
         private static string EnumToString(object enumValue)
         {
-            if (enumValue == null)
-                return null;
+            if (enumValue == null) return null;
 
             Type enumType = enumValue.GetType();
             if (!enumType.IsEnum)
@@ -1734,8 +1732,7 @@ namespace System.Ini
         // Supports comma-separated flags and ignores case unless specified.
         private static object ParseEnum(string value, Type enumType, bool ignoreCase = true)
         {
-            if (string.IsNullOrEmpty(value))
-                return null;
+            if (string.IsNullOrEmpty(value) || enumType == null) return null;
 
             // Split by commas, trim whitespace.
             string[] parts = value.Split(new[] { ',', '|' }, StringSplitOptions.RemoveEmptyEntries);
@@ -1766,18 +1763,118 @@ namespace System.Ini
             return Enum.ToObject(enumType, result);
         }
 
-        // Escape characters in the input string with backslashes.
-        private static string ToEscape(string text)
+        // Converts escaped characters in the input string.
+        private static string UnEscape(string text)
         {
-            int pos = 0;
+            int pos = -1;
             int inputLength = text.Length;
 
             if (inputLength == 0) return text;
 
-            StringBuilder sb = new StringBuilder(inputLength * 2);
+            // Find the first backslash or return the original text without allocating.
+            for (int i = 0; i < inputLength; ++i)
+            {
+                if (text[i] == '\\')
+                {
+                    pos = i;
+                    break;
+                }
+            }
+
+            if (pos < 0) return text; // No backslash found.
+
+            // Copy the unchanged prefix preceding the first escape sequence.
+            StringBuilder sb = new StringBuilder(inputLength);
+            sb.Append(text, 0, pos);
+
             do
             {
                 char c = text[pos++];
+                if (c == '\\')
+                {
+                    // Read the escape sequence following the backslash.
+                    // If the backslash is the last character, keep it unchanged.
+                    c = pos < inputLength ? text[pos] : '\\';
+                    switch (c)
+                    {
+                        case '\\':
+                            c = '\\';
+                            break;
+                        case '0':
+                            c = '\0';
+                            break;
+                        case 'a':
+                            c = '\a';
+                            break;
+                        case 'b':
+                            c = '\b';
+                            break;
+                        case 'n':
+                            c = '\n';
+                            break;
+                        case 'r':
+                            c = '\r';
+                            break;
+                        case 'f':
+                            c = '\f';
+                            break;
+                        case 't':
+                            c = '\t';
+                            break;
+                        case 'v':
+                            c = '\v';
+                            break;
+                        // Unicode escape: \uXXXX
+                        case 'u' when pos < inputLength - 3:
+                            c = UnHex(text, ++pos, 4);
+                            pos += 3;
+                            break;
+                        // Hex escape: \xXX
+                        case 'x' when pos < inputLength - 1:
+                            c = UnHex(text, ++pos, 2);
+                            pos++;
+                            break;
+                        // Control character escape: \cA .. \cZ
+                        case 'c' when pos < inputLength:
+                            c = text[++pos];
+                            if (c >= 'a' && c <= 'z')
+                                c -= ' ';
+                            if ((c = (char)(c - 0x40U)) >= ' ')
+                                c = '?';
+                            break;
+                        // Unknown escape sequence.
+                        // Preserve it exactly as it appears in the input string.
+                        default:
+                            sb.Append('\\');
+                            sb.Append(c);
+                            pos++;
+                            continue;
+                    }
+                    // Skip the escape code character.
+                    pos++;
+                }
+                sb.Append(c);
+
+            } while (pos < inputLength);
+
+            return sb.ToString();
+        }
+
+        // Converts special characters in the input string to escaped sequences.
+        private static string ToEscape(string value)
+        {
+            if (value == null) return null;
+
+            int pos = 0;
+            int inputLength = value.Length;
+
+            if (inputLength == 0) return value;
+
+            // Allocate enough capacity for the maximum possible escaped length.
+            StringBuilder sb = new StringBuilder(inputLength * 2);
+            do
+            {
+                char c = value[pos++];
 
                 switch (c)
                 {
@@ -1818,12 +1915,14 @@ namespace System.Ini
         }
 
         // Converts hex number to unicode character.
-        private static char UnHex(string hex)
+        /*private static char UnHex(string value)
         {
+            if (value == null) return '\0';
+
             int c = 0;
-            for (int i = 0; i < hex.Length; i++)
+            for (int i = 0; i < value.Length; i++)
             {
-                int r = hex[i]; // Obtain next digit.
+                int r = value[i]; // Obtain next digit.
                 if (r > 0x2F && r < 0x3A) r -= 0x30;
                 else if (r > 0x40 && r < 0x47) r -= 0x37;
                 else if (r > 0x60 && r < 0x67) r -= 0x57;
@@ -1832,11 +1931,29 @@ namespace System.Ini
             }
 
             return (char)c;
+        }*/
+
+        private static char UnHex(string value, int index, int length)
+        {
+            int c = 0;
+
+            for (int i = 0; i < length; i++)
+            {
+                int digit = ParseHexDigit(value[index++]);
+                if (digit < 0)
+                    return '?';
+
+                c = (c << 4) + digit;
+            }
+
+            return (char)c;
         }
 
         // Removes the outer '{' and '}' from a wrapped value.
         private static string UnWrap(string value)
         {
+            if (value == null) return null;
+
             if (value.Length >= 2 &&
                 value[0] == '{' &&
                 value[value.Length - 1] == '}')
@@ -1850,6 +1967,8 @@ namespace System.Ini
         // Wraps a multiline value in '{' and '}'.
         private static string ToWrap(string value)
         {
+            if (value == null) return null;
+
             for (int i = 0; i < value.Length; i++)
             {
                 if (value[i] == '\r' || value[i] == '\n')
@@ -1934,101 +2053,6 @@ namespace System.Ini
             if (c >= 'a' && c <= 'f')
                 return c - 'a' + 10;
             return -1;
-        }
-
-        // Converts any escaped characters in the input string.
-        private static string UnEscape(string text)
-        {
-            int pos = -1;
-            int inputLength = text.Length;
-
-            if (inputLength == 0) return text;
-
-            // Find the first occurrence of backslash or return the original text without allocating.
-            for (int i = 0; i < inputLength; ++i)
-            {
-                if (text[i] == '\\')
-                {
-                    pos = i;
-                    break;
-                }
-            }
-
-            if (pos < 0) return text; // Backslash not found.
-
-            // Copy the unchanged prefix preceding the first escape sequence.
-            StringBuilder sb = new StringBuilder(text.Substring(0, pos));
-
-            do
-            {
-                char c = text[pos++];
-                if (c == '\\')
-                {
-                    // Read the escape code following the backslash.
-                    // If the backslash is the last character, keep it unchanged.
-                    c = pos < inputLength ? text[pos] : '\\';
-                    switch (c)
-                    {
-                        case '\\':
-                            c = '\\';
-                            break;
-                        case '0':
-                            c = '\0';
-                            break;
-                        case 'a':
-                            c = '\a';
-                            break;
-                        case 'b':
-                            c = '\b';
-                            break;
-                        case 'n':
-                            c = '\n';
-                            break;
-                        case 'r':
-                            c = '\r';
-                            break;
-                        case 'f':
-                            c = '\f';
-                            break;
-                        case 't':
-                            c = '\t';
-                            break;
-                        case 'v':
-                            c = '\v';
-                            break;
-                        // Unicode escape: \uXXXX
-                        case 'u' when pos < inputLength - 3:
-                            c = UnHex(text.Substring(++pos, 4));
-                            pos += 3;
-                            break;
-                        // Hex escape: \xXX
-                        case 'x' when pos < inputLength - 1:
-                            c = UnHex(text.Substring(++pos, 2));
-                            pos++;
-                            break;
-                        // Control character escape: \cA .. \cZ
-                        case 'c' when pos < inputLength:
-                            c = text[++pos];
-                            if (c >= 'a' && c <= 'z')
-                                c -= ' ';
-                            if ((c = (char)(c - 0x40U)) >= ' ')
-                                c = '?';
-                            break;
-                        // Unknown escape sequence.
-                        // Preserve it exactly as it appears in the source.
-                        default:
-                            sb.Append("\\" + c);
-                            pos++;
-                            continue;
-                    }
-                    // Skip the escape code character.
-                    pos++;
-                }
-                sb.Append(c);
-
-            } while (pos < inputLength);
-
-            return sb.ToString();
         }
 
         private static bool IsNewLine(char c)
@@ -2372,6 +2396,171 @@ namespace System.Ini
         #region Public read methods
 
         /// <summary>
+        /// Exports the INI file content to a dictionary mapping section names to a dictionary
+        /// of keys with lists of their associated values (preserving order and duplicates).
+        /// </summary>
+        /// <returns>
+        /// A dictionary where the key is the section name (empty string for global entries)
+        /// and the value is a dictionary of key → list of values for that section.
+        /// </returns>
+        public Dictionary<string, Dictionary<string, List<string>>> ExportToDictionary()
+        {
+            StringComparer comparer = GetComparer(_comparison);
+            var result = new Dictionary<string, Dictionary<string, List<string>>>(comparer);
+
+            string currentSection = string.Empty; // global
+            Dictionary<string, List<string>> currentDict = null;
+
+            for (int i = 0; i < _matches.Count; i++)
+            {
+                Match match = _matches[i];
+
+                if (match.Groups["section"].Success)
+                {
+                    string sectionName = match.Groups["value"].Value;
+                    // Normalize case according to comparison settings
+                    sectionName = NormalizeCase(sectionName, _comparison);
+
+                    // Add new section if not exists
+                    if (!result.TryGetValue(sectionName, out currentDict))
+                    {
+                        currentDict = new Dictionary<string, List<string>>(comparer);
+                        result[sectionName] = currentDict;
+                    }
+                    currentSection = sectionName;
+                    continue;
+                }
+
+                if (match.Groups["entry"].Success)
+                {
+                    // If no section yet, use global (empty key)
+                    if (currentDict == null)
+                    {
+                        // Global section
+                        if (!result.TryGetValue(string.Empty, out currentDict))
+                        {
+                            currentDict = new Dictionary<string, List<string>>(comparer);
+                            result[string.Empty] = currentDict;
+                        }
+                    }
+
+                    string key = match.Groups["key"].Value;
+                    string value = match.Groups["value"].Value;
+
+                    // Unwrap/unescape if needed
+                    if (_allowMultiLine) value = UnWrap(value);
+                    if (_allowEscapeChars) value = UnEscape(value);
+
+                    // Normalize key case
+                    key = NormalizeCase(key, _comparison);
+
+                    if (!currentDict.TryGetValue(key, out List<string> values))
+                    {
+                        values = new List<string>();
+                        currentDict[key] = values;
+                    }
+                    values.Add(value);
+                }
+                // Ignore comments, whitespace, etc.
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Returns a simplified version of the INI file content containing only sections
+        /// and key-value pairs, without comments, empty lines, and extra whitespace.
+        /// The resulting string uses '=' as the delimiter and normalizes spacing.
+        /// Multiple values for the same key are preserved as separate lines.
+        /// The order of sections and keys is preserved.
+        /// </summary>
+        /// <returns>A compacted INI string.</returns>
+        public string Justify()
+        {
+            var sb = new StringBuilder();
+
+            // We'll process matches directly to preserve order and avoid extra allocations.
+            bool inGlobal = true;
+            bool firstSection = true;
+            string currentSection = null;
+
+            // We need to collect global entries first, then sections.
+            // To keep order, we'll iterate twice: first collect global entries, then sections.
+            // Or we can build lists.
+            // Let's build a list of all entries with their section.
+
+            var globalEntries = new List<KeyValuePair<string, string>>();
+            var sectionEntries = new Dictionary<string, List<KeyValuePair<string, string>>>(StringComparer.Ordinal);
+            var sectionOrder = new List<string>();
+
+            for (int i = 0; i < _matches.Count; i++)
+            {
+                Match match = _matches[i];
+
+                if (match.Groups["section"].Success)
+                {
+                    string section = match.Groups["value"].Value;
+                    if (!sectionEntries.ContainsKey(section))
+                    {
+                        sectionEntries[section] = new List<KeyValuePair<string, string>>();
+                        sectionOrder.Add(section);
+                    }
+                    currentSection = section;
+                    inGlobal = false;
+                    continue;
+                }
+
+                if (match.Groups["entry"].Success)
+                {
+                    string key = match.Groups["key"].Value;
+                    string value = match.Groups["value"].Value;
+                    if (_allowMultiLine) value = UnWrap(value);
+                    if (_allowEscapeChars) value = UnEscape(value);
+
+                    if (inGlobal)
+                    {
+                        globalEntries.Add(new KeyValuePair<string, string>(key, value));
+                    }
+                    else
+                    {
+                        if (sectionEntries.TryGetValue(currentSection, out var list))
+                            list.Add(new KeyValuePair<string, string>(key, value));
+                    }
+                }
+                // Ignore other groups
+            }
+
+            // Write global entries
+            if (globalEntries.Count > 0)
+            {
+                foreach (var kv in globalEntries)
+                    sb.AppendLine($"{kv.Key}={kv.Value}");
+                sb.AppendLine();
+            }
+
+            // Write sections
+            foreach (string section in sectionOrder)
+            {
+                sb.AppendLine($"[{section}]");
+                var entries = sectionEntries[section];
+                foreach (var kv in entries)
+                    sb.AppendLine($"{kv.Key}={kv.Value}");
+                sb.AppendLine(); // blank line after each section
+            }
+
+            // Remove trailing newline
+            if (sb.Length > 0)
+            {
+                if (sb[^1] == '\n')
+                    sb.Length--;
+                if (sb.Length > 0 && sb[^1] == '\r')
+                    sb.Length--;
+            }
+
+            return sb.ToString();
+        }
+
+        /// <summary>
         /// Reads all sections from the INI file.
         /// </summary>
         /// <returns>
@@ -2420,6 +2609,23 @@ namespace System.Ini
                 throw new ArgumentNullException(nameof(key));
 
             return GetValue(section, key, defaultValue);
+        }
+
+        /// <summary>
+        /// Reads a JSON string associated with the specified section and key from the INI file
+        /// without removing outer curly braces or wrapping/unwrapping multiline values.
+        /// </summary>
+        /// <param name="section">Section name. Pass null to get global entries above all sections.</param>
+        /// <param name="key">Key name.</param>
+        /// <param name="defaultValue">The value to be returned if the specified entry is not found.</param>
+        /// <returns>The raw JSON string as stored in the INI file, or <paramref name="defaultValue"/> if not found.</returns>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="key"/> is null.</exception>
+        public string ReadJsonString(string section, string key, string defaultValue = null)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+
+            return GetValue(section, key, defaultValue, false);
         }
 
         /// <summary>
@@ -2599,14 +2805,16 @@ namespace System.Ini
         }
 
         /// <summary>
-        /// Reads a JSON value from the specified section and key, and returns it as a dynamic object.
+        /// Reads a JSON value from the specified section and key, and returns it as an object.
+        /// The returned object can be a primitive (string, bool, double), an array (object[]),
+        /// or a dictionary (IDictionary&lt;string, object&gt;) for JSON objects.
         /// </summary>
         /// <param name="section">Section name. Pass <c>null</c> for global entries.</param>
         /// <param name="key">Key name.</param>
-        /// <param name="defaultValue">Default dynamic object returned if entry not found or JSON invalid.</param>
-        /// <returns>A dynamic object representing the JSON, or <paramref name="defaultValue"/> if not found.</returns>
+        /// <param name="defaultValue">Default object returned if entry not found or JSON invalid.</param>
+        /// <returns>An object representing the JSON, or <paramref name="defaultValue"/> if not found.</returns>
         /// <exception cref="ArgumentNullException">Thrown when <paramref name="key"/> is <c>null</c>.</exception>
-        public dynamic ReadJsonObject(string section, string key, dynamic defaultValue = null)
+        public object ReadJsonObject(string section, string key, object defaultValue = null)
         {
             if (key == null)
                 throw new ArgumentNullException(nameof(key));
@@ -2617,7 +2825,8 @@ namespace System.Ini
 
             try
             {
-                return ParseJson(json);
+                object result = ParseJson(json);
+                return result ?? defaultValue;
             }
             catch
             {
@@ -3411,6 +3620,22 @@ namespace System.Ini
         }
 
         /// <summary>
+        /// Writes a JSON string associated with the specified section and key to the INI file
+        /// without adding outer curly braces or wrapping/unwrapping multiline values.
+        /// </summary>
+        /// <param name="section">Section name. Pass null to set global entries above all sections.</param>
+        /// <param name="key">Key name.</param>
+        /// <param name="value">The JSON string to be written.</param>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="key"/> is null.</exception>
+        public void WriteJsonString(string section, string key, string value)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+
+            SetValue(section, key, value, false, false);
+        }
+
+        /// <summary>
         /// Writes a strings associated with the specified section and key to the INI file.
         /// </summary>
         /// <param name="section">
@@ -3495,15 +3720,16 @@ namespace System.Ini
         }
 
         /// <summary>
-        /// Writes a dynamic object as JSON to the specified section and key.
+        /// Writes an object as JSON to the specified section and key.
+        /// Supports IDictionary&lt;string, object&gt;, IEnumerable (non-string), and primitives.
         /// If <paramref name="value"/> is <c>null</c>, the entry is removed.
         /// </summary>
         /// <param name="section">Section name. Pass <c>null</c> for global entries.</param>
         /// <param name="key">Key name.</param>
-        /// <param name="value">The dynamic object to serialize to JSON.</param>
+        /// <param name="value">The object to serialize to JSON.</param>
         /// <param name="beautify">If <c>true</c>, formats JSON with indentation.</param>
         /// <exception cref="ArgumentNullException">Thrown when <paramref name="key"/> is <c>null</c>.</exception>
-        public void WriteJsonObject(string section, string key, dynamic value, bool beautify = false)
+        public void WriteJsonObject(string section, string key, object value, bool beautify = false)
         {
             if (key == null)
                 throw new ArgumentNullException(nameof(key));
@@ -3515,7 +3741,7 @@ namespace System.Ini
             }
 
             string json = SerializeJson(value, beautify);
-            SetValue(section, key, json, false);
+            SetValue(section, key, json, false, false);
         }
 
 
