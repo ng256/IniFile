@@ -1,6 +1,9 @@
 # IniFile — Convenient Single-file INI Editor for .NET
 A single-file, dependency-free INI reader and editor that modifies configuration files without destroying their formatting.
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![TestRegex](https://img.shields.io/badge/Test-Regex-blue)](https://regex101.com/r/mul0C2/13)
+
 **IniFile** is a lightweight INI parser that is tolerant of malformed files. Unlike traditional dictionary-based implementations, it **preserves the original formatting** — including whitespace, comments, line endings, and entry order — by modifying the original text directly instead of rebuilding the file.
 
 It provides a convenient API for reading, writing, and deleting values, as well as handling multi-line **JSON blocks** embedded in INI files. The library consists of a single source file and has no external dependencies. Drop one file into your project and edit INI files without destroying their formatting.
