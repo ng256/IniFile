@@ -2429,27 +2429,45 @@ namespace System.Ini
             return sb;
         }
 
-        // Tries to determine if either \r (carriage return) or \n (line feed) characters are present.
-        // It stops iterating as soon as it finds both characters.
+        // Detects the most likely line breaker by counting CR and LF characters with 10% threshold.
         private static string AutoDetectLineBreaker(string text)
         {
             if (string.IsNullOrEmpty(text)) return Environment.NewLine;
 
-            bool r = false, n = false;
+            int crCount = 0;
+            int lfCount = 0;
 
-            // Searching for cr and lf characters.
+            // Count CR and LF characters.
             for (int index = 0; index < text.Length; index++)
             {
-                char c = text[index];
-                if (c == '\r') r = true;
-                if (c == '\n') n = true;
-
-                // If both carriage return and line feed were found, exit the loop.
-                if (r && n) break;
+                if (text[index] == '\r')
+                    crCount++;
+                else if (text[index] == '\n')
+                    lfCount++;
             }
 
-            // Determine the line break type based on the flags set.
-            return n ? r ? "\r\n" : "\n" : r ? "\r" : Environment.NewLine;
+            int crlfCount = Math.Min(crCount, lfCount);
+            int crOnlyCount = crCount - crlfCount;
+            int lfOnlyCount = lfCount - crlfCount;
+            int total = crlfCount + crOnlyCount + lfOnlyCount;
+
+            if (total == 0)
+                return Environment.NewLine;
+
+            int threshold = total / 10; // 10% occurrence threshold.
+
+            // Prefer CRLF when it is used frequently enough.
+            if (crlfCount > threshold)
+                return "\r\n";
+
+            // Otherwise check single-character line breakers.
+            if (lfOnlyCount > threshold)
+                return "\n";
+
+            if (crOnlyCount > threshold)
+                return "\r";
+
+            return Environment.NewLine;
         }
 
         // Tries to detect the text encoding using BOM and simple heuristics.
