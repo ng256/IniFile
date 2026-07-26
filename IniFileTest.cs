@@ -111,76 +111,72 @@ namespace IniFileTest
 
         private static string CreateTestIniContent()
         {
-            var sb = new StringBuilder();
-            sb.AppendLine("# Global comment");
-            sb.AppendLine("; Another global comment");
-            sb.AppendLine("global_key1 = global_value1");
-            sb.AppendLine("global_key2 = global_value2");
-            sb.AppendLine();
-            sb.AppendLine("[Section1]");
-            sb.AppendLine("key1 = value1");
-            sb.AppendLine("key2 = 123");
-            sb.AppendLine("key3 = 45.67");
-            sb.AppendLine("key4 = true");
-            sb.AppendLine("key5 = 2023-12-31");
-            sb.AppendLine("key6 = A");
-            sb.AppendLine("key7 = 0x1A");
-            sb.AppendLine();
-            sb.AppendLine("[Section2]");
-            sb.AppendLine("; Some comments");
-            sb.AppendLine("key1 = value1");
-            sb.AppendLine("key1 = value2   ; duplicate key for array");
-            sb.AppendLine("key2 = 10");
-            sb.AppendLine("key2 = 20");
-            sb.AppendLine("key3 = hello world");
-            sb.AppendLine();
-            sb.AppendLine("[Section3]");
-            sb.AppendLine("key_with_space = value with space");
-            sb.AppendLine("key_with_colon: colon_value");
-            sb.AppendLine("key_with_escapes = Hello\\nWorld\\t!");
-            sb.AppendLine();
-            // JSON tests
-            sb.AppendLine("[JsonSection]");
-            sb.AppendLine("inline_json = {\"name\":\"test\",\"value\":123}");
-            sb.AppendLine("multiline_json =");
-            sb.AppendLine("{");
-            sb.AppendLine("  \"array\": [1, 2, 3],");
-            sb.AppendLine("  \"nested\": {\"flag\": true}");
-            sb.AppendLine("}");
-            sb.AppendLine("json_array = [1, 2, 3, 4]");
-            return sb.ToString();
+            return @"# Global comment
+; Another global comment
+global_key1 = global_value1
+global_key2 = global_value2
+
+[Section1]
+key1 = value1
+key2 = 123
+key3 = 45.67
+key4 = true
+key5 = 2023-12-31
+key6 = A
+key7 = 0x1A
+
+[Section2]
+; Some comments
+key1 = value1
+key1 = value2   ; duplicate key for array
+key2 = 10
+key2 = 20
+key3 = hello world
+
+[Section3]
+key_with_space = value with space
+key_with_colon: colon_value
+key_with_escapes = Hello\nWorld\t!
+
+[JsonSection]
+inline_json = {""name"":""test"",""value"":123}
+multiline_json =
+{
+  ""array"": [1, 2, 3],
+  ""nested"": {""flag"": true}
+}
+json_array = [1, 2, 3, 4]";
         }
 
-        private static string CreateEstimatedIniContent()
-        {
+            private static string CreateEstimatedIniContent()
+            {
             // Actual content after all test operations, with json_array removed
-            var sb = new StringBuilder();
-            sb.AppendLine("# Global comment");
-            sb.AppendLine("; Another global comment");
-            sb.AppendLine("global_key1 = new_global");
-            sb.AppendLine("global_key2 = global_value2");
-            sb.AppendLine();
-            sb.AppendLine("[Section1]");
-            sb.AppendLine("key1 = new_value");
-            sb.AppendLine("key2 = 999");
-            sb.AppendLine();
-            sb.AppendLine("key4 = False");
-            sb.AppendLine("key5 = 2023-12-31");
-            sb.AppendLine("key6 = A");
-            sb.AppendLine("key7 = 0x1A");
-            sb.AppendLine();
-            sb.AppendLine("newKey=added");
-            sb.AppendLine();
-            sb.AppendLine("[Section2]");
-            sb.AppendLine("; Somekey1 = new1");
-            sb.AppendLine("   ; duplicate key fokey2 = 10");
-            sb.AppendLine();
-            sb.AppendLine("key3 = hello world");
-            sb.AppendLine();
-            sb.AppendLine("[JsonSection]");
-            sb.AppendLine();
-            sb.AppendLine();
-            return sb.ToString();
+            return @"# Global comment
+; Another global comment
+global_key1 = new_global
+global_key2 = global_value2
+
+[Section1]
+key1 = new_value
+key2 = 999
+
+key4 = False
+key5 = 2023-12-31
+key6 = A
+key7 = 0x1A
+
+newKey=added
+
+[Section2]
+; Somekey1 = new1
+   ; duplicate key fokey2 = 10
+
+key3 = hello world
+
+[JsonSection]
+
+
+";
         }
 
         private static void RunAllTests(IniFile ini)
