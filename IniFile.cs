@@ -201,6 +201,19 @@ namespace System.Ini
         [NonSerialized]
         private List<Match> _matches;
 
+        // Matched groups indexes.
+        [NonSerialized]
+        private readonly int _groupValue;
+        
+        [NonSerialized]
+        private readonly int _groupSection;
+        
+        [NonSerialized]
+        private readonly int _groupKey;
+        
+        [NonSerialized]
+        private readonly int _groupEntry;
+
         // Regular expression used for parsing the INI file.
         [NonSerialized]
         private readonly Regex _iniRegex;
@@ -318,6 +331,10 @@ namespace System.Ini
                                     @"(?<object_open>{)|(?<object_close>})|" +
                                     @"(?<whitespace>[^\S\r\n]+)|(?<newline>[\r\n]+)|(?<undefined>.+)",
                                     regexOptions);
+            _groupSection = _iniRegex.GroupNumberFromName("section");
+            _groupEntry = _iniRegex.GroupNumberFromName("entry");
+            _groupKey = _iniRegex.GroupNumberFromName("key");
+            _groupValue = _iniRegex.GroupNumberFromName("value");
             Content = content;
         }
 
@@ -710,10 +727,11 @@ namespace System.Ini
             {
                 Match match = _matches[i];
 
-                if (match.Groups["section"].Success)
+                if (match.Groups[_groupSection].Success)
                 {
                     // Convert to lowercase if ignore case mode is enabled.
-                    string section = NormalizeCase(match.Groups["value"].Value, _comparison);
+                    Group group = match.Groups[_groupValue];
+                    string section = NormalizeSubstring(_content, group.Index, group.Length, _comparison);
                     sections.Add(section);
                 }
             }
@@ -735,16 +753,19 @@ namespace System.Ini
 
                 // If the section name is not specified, then the parameters without a section,
                 // which are located above the first section, are used.
-                if (match.Groups["section"].Success)
+                if (match.Groups[_groupSection].Success)
                 {
-                    inSection = match.Groups["value"].Value.Equals(section, _comparison);
+                    Group group = match.Groups[_groupValue];
+                    inSection = SubstringEquals(_content, group.Index, group.Length, section, _comparison);
+
                     if (emptySection) break;
                     continue;
                 }
 
-                if (inSection && match.Groups["entry"].Success)
+                if (inSection && match.Groups[_groupEntry].Success)
                 {
-                    string key = NormalizeCase(match.Groups["key"].Value, _comparison);
+                    Group group = match.Groups[_groupKey];
+                    string key = NormalizeSubstring(_content, group.Index, group.Length, _comparison);
                     keys.Add(key);
                 }
             }
@@ -764,22 +785,22 @@ namespace System.Ini
             {
                 Match match = _matches[i];
 
-                if (match.Groups["section"].Success)
+                if (match.Groups[_groupSection].Success)
                 {
-                    inSection = match.Groups["value"].Value.Equals(section, _comparison);
+                    Group group = match.Groups[_groupValue];
+                    inSection = SubstringEquals(_content, group.Index, group.Length, section, _comparison);
+
                     if (emptySection) break;
                     continue;
                 }
 
-                if (inSection && match.Groups["entry"].Success)
+                if (inSection && match.Groups[_groupEntry].Success)
                 {
-                    if (!match.Groups["key"].Value.Equals(key, _comparison))
+                    Group group = match.Groups[_groupKey];
+                    if (!SubstringEquals(_content, group.Index, group.Length, key, _comparison))
                         continue;
 
-                    value = match.Groups["value"].Value;
-
-
-
+                    value = match.Groups[_groupValue].Value;
 
                     if (_allowMultiLine && unwrap) value = UnWrap(value);
                     if (_allowEscapeChars) value = UnEscape(value);
@@ -803,18 +824,22 @@ namespace System.Ini
             {
                 Match match = _matches[i];
 
-                if (match.Groups["section"].Success)
+                if (match.Groups[_groupSection].Success)
                 {
-                    inSection = match.Groups["value"].Value.Equals(section, _comparison);
+                    Group group = match.Groups[_groupValue];
+                    inSection = SubstringEquals(_content, group.Index, group.Length, section, _comparison);
+
                     if (emptySection) break;
                     continue;
                 }
 
-                if (inSection && match.Groups["entry"].Success)
+                if (inSection && match.Groups[_groupEntry].Success)
                 {
-                    string value = match.Groups["value"].Value;
+                    string value = match.Groups[_groupValue].Value;
+
                     if (_allowMultiLine && unwrap) value = UnWrap(value);
                     if (_allowEscapeChars) value = UnEscape(value);
+
                     values.Add(value);
                 }
             }
@@ -837,21 +862,26 @@ namespace System.Ini
             {
                 Match match = _matches[i];
 
-                if (match.Groups["section"].Success)
+                if (match.Groups[_groupSection].Success)
                 {
-                    inSection = match.Groups["value"].Value.Equals(section, _comparison);
+                    Group group = match.Groups[_groupValue];
+                    inSection = SubstringEquals(_content, group.Index, group.Length, section, _comparison);
+
                     if (emptySection) break;
                     continue;
                 }
 
-                if (inSection && match.Groups["entry"].Success)
+                if (inSection && match.Groups[_groupEntry].Success)
                 {
-                    if (!match.Groups["key"].Value.Equals(key, _comparison))
+                    Group group = match.Groups[_groupKey];
+                    if (!SubstringEquals(_content, group.Index, group.Length, key, _comparison))
                         continue;
 
-                    string value = match.Groups["value"].Value;
+                    string value = match.Groups[_groupValue].Value;
+
                     if (_allowMultiLine && unwrap) value = UnWrap(value);
                     if (_allowEscapeChars) value = UnEscape(value);
+
                     values.Add(value);
                 }
             }
@@ -867,7 +897,7 @@ namespace System.Ini
         private void SetValue(string section, string key, string value, bool wrap = true, bool escape = true)
         {
             bool emptySection = string.IsNullOrEmpty(section);
-            bool expectedValue = !string.IsNullOrEmpty(value); // Indicates that value is not set.
+            bool expectedValue = !string.IsNullOrEmpty(value); // Indicates that a value should be inserted or updated.
             bool inSection = emptySection;
             Match lastMatch = null; // Keep track of the last match for future reference.
             StringBuilder sb = new StringBuilder(_content);
@@ -887,42 +917,43 @@ namespace System.Ini
             {
                 Match match = _matches[i];
 
-                if (match.Groups["section"].Success)
+                if (match.Groups[_groupSection].Success)
                 {
-                    inSection = match.Groups["value"].Value.Equals(section, _comparison);
-                    if (emptySection) break; // If no section is specified, break out of the loop.
+                    Group group = match.Groups[_groupValue];
+                    inSection = SubstringEquals(_content, group.Index, group.Length, section, _comparison);
+
+                    if (emptySection) break;
                     continue;
                 }
 
                 // If inside the correct section and the match is an entry.
-                if (inSection && match.Groups["entry"].Success)
+                if (inSection && match.Groups[_groupEntry].Success)
                 {
                     lastMatch = match;
 
                     // Continue if the key doesn't match.
-                    if (!match.Groups["key"].Value.Equals(key, _comparison))
+                    Group keyGroup = match.Groups[_groupKey];
+                    if (!SubstringEquals(_content, keyGroup.Index, keyGroup.Length, key, _comparison))
                         continue;
 
-                    // Remove the existing value associated with the key
-                    // and insert the new value in its place if it is not empty.
-                    Group group = match.Groups["value"];
+                    Group valueGroup = match.Groups[_groupValue];
 
-                    int index = group.Index;
-                    int length = group.Length;
+                    int index = valueGroup.Index;
+                    int length = valueGroup.Length;
 
                     if (expectedValue)
                     {
-                        // Remove the old value and insert the new value in its place..
+                        // Remove the old value and insert the new value in its place.
                         sb.Remove(index, length);
                         sb.Insert(index, value);
                     }
                     else
                     {
-                        // Remove all entry.
+                        // Remove the entire entry.
                         sb.Remove(match.Index, match.Length);
                     }
 
-                    // Indicate the value has been set.
+                    // The operation has been completed.
                     expectedValue = false;
                     break;
                 }
@@ -939,15 +970,13 @@ namespace System.Ini
                     index = lastMatch.Index + lastMatch.Length;
                 }
 
-                // If no match was found, append a new section and then insert the key-value pair
+                // If no match was found, append a new section and then insert the key-value pair.
                 else if (!emptySection)
                 {
-
-
                     // Add the section header.
                     sb.Append(_lineBreaker);
                     sb.Append($"[{section}]{_lineBreaker}");
-                    index = sb.Length;  // Set the index to the end of the StringBuilder.
+                    index = sb.Length;
                 }
 
                 // Insert the new key-value pair into the content.
@@ -967,6 +996,7 @@ namespace System.Ini
         private void SetValues(string section, string key, bool wrap = true, params string[] values)
         {
             if (values == null) values = new string[0];
+
             int valueIndex = 0;  // Track the index of the current value being processed.
             bool emptySection = string.IsNullOrEmpty(section);
             bool inSection = emptySection;
@@ -978,15 +1008,17 @@ namespace System.Ini
             // List to store all matches of the target key within the target section.
             List<Match> keyMatches = new List<Match>(DefaultCapacity);
 
-            // Iterate over the ini content and process each match for section and entry
+            // Iterate over the ini content and process each match for section and entry.
             for (int i = 0; i < _matches.Count; i++)
             {
                 Match match = _matches[i];
 
-                if (match.Groups["section"].Success)  // Check if the current match is a section.
+                if (match.Groups[_groupSection].Success)  // Check if the current match is a section.
                 {
                     // Set the inSection flag based on whether the section matches the target section.
-                    bool sectionMatch = match.Groups["value"].Value.Equals(section, _comparison);
+                    Group sectionGroup = match.Groups[_groupValue];
+                    bool sectionMatch = SubstringEquals(_content, sectionGroup.Index, sectionGroup.Length, section, _comparison);
+
                     if (sectionMatch)
                         lastSection = match;  // Remember only the matching section header.
 
@@ -996,12 +1028,13 @@ namespace System.Ini
                 }
 
                 // Check if inside the correct section and the current match is an entry.
-                if (inSection && match.Groups["entry"].Success)
+                if (inSection && match.Groups[_groupEntry].Success)
                 {
                     lastMatch = match;  // Remember the last entry in the section.
 
                     // Check if the key matches.
-                    if (match.Groups["key"].Value.Equals(key, _comparison))
+                    Group keyGroup = match.Groups[_groupKey];
+                    if (SubstringEquals(_content, keyGroup.Index, keyGroup.Length, key, _comparison))
                     {
                         keyMatches.Add(match);
 
@@ -1009,26 +1042,30 @@ namespace System.Ini
                         if (valueIndex < values.Length)
                         {
                             // Get the group representing the value.
-                            Group group = match.Groups["value"];
+                            Group valueGroup = match.Groups[_groupValue];
 
                             // Get the new value to insert.
                             string newValue = values[valueIndex++] ?? string.Empty;
-                            string oldValue = group.Value;
+                            string oldValue = valueGroup.Value;
 
                             // Calculate the index considering previous modifications.
-                            int index = group.Index + offset;
-                            int length = group.Length;
+                            int index = valueGroup.Index + offset;
+                            int length = valueGroup.Length;
 
                             // Remove the old value and insert the new one.
                             sb.Remove(index, length);
+
                             if (_allowEscapeChars)
                                 newValue = ToEscape(newValue);
                             else
                             {
                                 string lineBreaker = _allowMultiLine ? _lineBreaker : " ";
                                 newValue = NormalizeLineBreaker(newValue, lineBreaker);
-                                if (_allowMultiLine && wrap) newValue = ToWrap(newValue);
+
+                                if (_allowMultiLine && wrap)
+                                    newValue = ToWrap(newValue);
                             }
+
                             sb.Insert(index, newValue);
 
                             // Update the offset for future replacements.
@@ -1051,6 +1088,7 @@ namespace System.Ini
                     Match match = keyMatches[j];
                     int index = match.Index + offset;
                     int length = match.Length;
+
                     sb.Remove(index, length);
                     offset -= length; // Adjust offset for the removal.
                 }
@@ -1087,15 +1125,17 @@ namespace System.Ini
                 while (valueIndex < values.Length)
                 {
                     string value = values[valueIndex++];
+
                     if (_allowEscapeChars)
                         value = ToEscape(value);
                     else
                     {
                         string lineBreaker = _allowMultiLine ? _lineBreaker : " ";
                         value = NormalizeLineBreaker(value, lineBreaker);
-                        if (_allowMultiLine && wrap) value = ToWrap(value);
-                    }
 
+                        if (_allowMultiLine && wrap)
+                            value = ToWrap(value);
+                    }
 
                     // Insert the new key-value pair into the content.
                     string line = $"{key}={value}";
@@ -1103,7 +1143,7 @@ namespace System.Ini
                 }
             }
 
-            // Update the content with the modified StringBuilder content
+            // Update the content with the modified StringBuilder content.
             Content = sb.ToString();
         }
 
@@ -1663,31 +1703,194 @@ namespace System.Ini
 
         #region Internal utility and helper methods
 
-        private static ExpandoObject ConvertToExpando(IDictionary<string, object> dict)
+        // Dynamic object wrapper that behaves similarly to ExpandoObject,
+        // but allows custom handling of missing members and provides dictionary access.
+        private class SafeExpandoObject : DynamicObject, IDictionary<string, object>
         {
-            var expando = new ExpandoObject();
+            // Internal storage for dynamic properties.
+            private readonly Dictionary<string, object> _values =
+                new Dictionary<string, object>();
+
+            // Gets a dynamic property value by its name.
+            // Returns false when the property does not exist, causing the dynamic binder
+            // to handle the missing member according to the default behavior.
+            public override bool TryGetMember(GetMemberBinder binder, out object result)
+            {
+                try
+                {
+                    return _values.TryGetValue(binder.Name, out result);
+                }
+                catch (Exception)
+                {
+                    result = null;
+                    return false;
+                }
+                
+            }
+
+            // Sets a dynamic property value by its name.
+            public override bool TrySetMember(SetMemberBinder binder, object value)
+            {
+                try
+                {
+                    _values[binder.Name] = value;
+                }
+                catch
+                {
+                    return false;
+                }
+                return true;
+            }
+
+            // Provides dictionary-style access to dynamic properties.
+            // Returns null instead of throwing an exception when the key is missing.
+            public object this[string key]
+            {
+                get
+                {
+                    object value;
+                    return _values.TryGetValue(key, out value) ? value : null;
+                }
+                set
+                {
+                    _values[key] = value;
+                }
+            }
+
+            // Returns a collection of all property names.
+            public ICollection<string> Keys => _values.Keys;
+
+            // Returns a collection of all property values.
+            public ICollection<object> Values => _values.Values;
+
+            // Returns the number of stored properties.
+            public int Count => _values.Count;
+
+            // Indicates whether the collection can be modified.
+            public bool IsReadOnly => false;
+
+            // Adds a new property with the specified name and value.
+            public void Add(string key, object value)
+            {
+                _values.Add(key, value);
+            }
+
+            // Adds a new property using a key-value pair.
+            public void Add(KeyValuePair<string, object> item)
+            {
+                _values.Add(item.Key, item.Value);
+            }
+
+            // Checks whether a property with the specified name exists.
+            public bool ContainsKey(string key)
+            {
+                return _values.ContainsKey(key);
+            }
+
+            // Removes a property by its name.
+            public bool Remove(string key)
+            {
+                return _values.Remove(key);
+            }
+
+            // Gets a property value by its name.
+            public bool TryGetValue(string key, out object value)
+            {
+                return _values.TryGetValue(key, out value);
+            }
+
+            // Removes all stored properties.
+            public void Clear()
+            {
+                _values.Clear();
+            }
+
+            // Checks whether the collection contains the specified key-value pair.
+            public bool Contains(KeyValuePair<string, object> item)
+            {
+                return ((ICollection<KeyValuePair<string, object>>)_values)
+                    .Contains(item);
+            }
+
+            // Copies all properties to an array starting from the specified index.
+            public void CopyTo(KeyValuePair<string, object>[] array, int arrayIndex)
+            {
+                ((ICollection<KeyValuePair<string, object>>)_values)
+                    .CopyTo(array, arrayIndex);
+            }
+
+            // Removes the specified key-value pair from the collection.
+            public bool Remove(KeyValuePair<string, object> item)
+            {
+                return ((ICollection<KeyValuePair<string, object>>)_values)
+                    .Remove(item);
+            }
+
+            // Returns an enumerator for iterating through stored properties.
+            public IEnumerator<KeyValuePair<string, object>> GetEnumerator()
+            {
+                return _values.GetEnumerator();
+            }
+
+            // Returns a non-generic enumerator for IEnumerable compatibility.
+            IEnumerator IEnumerable.GetEnumerator()
+            {
+                return GetEnumerator();
+            }
+
+            // Converts SafeExpandoObject to a standard ExpandoObject instance.
+            public static explicit operator ExpandoObject(SafeExpandoObject source)
+            {
+                var result = new ExpandoObject();
+                var dict = (IDictionary<string, object>)result;
+
+                foreach (var pair in source)
+                {
+                    dict[pair.Key] = pair.Value;
+                }
+
+                return result;
+            }
+        }
+
+        // Converts a dictionary representation of an object into a SafeExpandoObject.
+        private static SafeExpandoObject ConvertToExpando(IDictionary<string, object> dict)
+        {
+            var expando = new SafeExpandoObject();
             var expandoDict = (IDictionary<string, object>)expando;
+
             foreach (var kvp in dict)
             {
+                // Convert nested objects recursively.
                 if (kvp.Value is IDictionary<string, object> nestedDict)
                     expandoDict[kvp.Key] = ConvertToExpando(nestedDict);
+
+                // Convert arrays that may contain nested dictionaries or arrays.
                 else if (kvp.Value is object[] array)
                     expandoDict[kvp.Key] = ConvertArray(array);
+
+                // Copy primitive values and other objects as-is.
                 else
                     expandoDict[kvp.Key] = kvp.Value;
             }
+
             return expando;
         }
 
+        // Recursively converts nested objects and arrays inside an object array.
         private static object[] ConvertArray(object[] array)
         {
             for (int i = 0; i < array.Length; i++)
             {
+                // Convert nested objects inside the array.
                 if (array[i] is IDictionary<string, object> dict)
                     array[i] = ConvertToExpando(dict);
+
+                // Convert nested arrays recursively.
                 else if (array[i] is object[] nestedArray)
                     array[i] = ConvertArray(nestedArray);
             }
+
             return array;
         }
 
@@ -1698,12 +1901,12 @@ namespace System.Ini
             Type type = value.GetType();
 
             // If it's already an ExpandoObject, convert to Dictionary<string, object>.
-            if (type == typeof(ExpandoObject))
+            if (value is IDictionary<string, object> dict)
             {
-                var dict = new Dictionary<string, object>(DefaultCapacity);
-                foreach (var kv in (IDictionary<string, object>)value)
-                    dict[kv.Key] = ConvertFromDynamic(kv.Value);
-                return dict;
+                var result = new Dictionary<string, object>(DefaultCapacity);
+                foreach (var kv in dict)
+                    result[kv.Key] = ConvertFromDynamic(kv.Value);
+                return result;
             }
 
             // If it's an array (object[]), convert each element.
@@ -2396,7 +2599,7 @@ namespace System.Ini
 
 
         // Normalizes the string case according to the specified comparison mode.
-        private static string NormalizeCase(string text, StringComparison comparison)
+        private static string NormalizeString(string text, StringComparison comparison)
         {
             if ((((int)comparison) & 1) != 0)
                 switch (comparison)
@@ -2409,6 +2612,25 @@ namespace System.Ini
                 }
 
             return text;
+        }
+
+        // Normalizes the substring case according to the specified comparison mode.
+        private static string NormalizeSubstring(string source, int index, int length, StringComparison comparison)
+        {
+            if ((((int)comparison) & 1) != 0)
+            {
+                switch (comparison)
+                {
+                    case StringComparison.CurrentCultureIgnoreCase:
+                        return source.Substring(index, length).ToLower(CultureInfo.CurrentCulture);
+
+                    case StringComparison.InvariantCultureIgnoreCase:
+                    case StringComparison.OrdinalIgnoreCase:
+                        return source.Substring(index, length).ToLowerInvariant();
+                }
+            }
+
+            return source.Substring(index, length);
         }
 
         // Replaces all line break sequences with the specified line breaker.
@@ -2520,6 +2742,22 @@ namespace System.Ini
             return sb.ToString();
         }
 
+        // Compares a substring of the source string with the specified value
+        // without allocating an intermediate string.
+        private static bool SubstringEquals(string source, int index, int length, string value, StringComparison comparison)
+        {
+            if (ReferenceEquals(source, value))
+                return true;
+
+            if (source == null || value == null)
+                return false;
+
+            if (length != value.Length)
+                return false;
+
+            return string.Compare(source, index, value, 0, length, comparison) == 0;
+        }
+
         #endregion
 
         /************************************************** Public API **************************************************/
@@ -2598,11 +2836,11 @@ namespace System.Ini
             {
                 Match match = _matches[i];
 
-                if (match.Groups["section"].Success)
+                if (match.Groups[_groupSection].Success)
                 {
-                    string sectionName = match.Groups["value"].Value;
+                    string sectionName = match.Groups[_groupValue].Value;
                     // Normalize case according to comparison settings
-                    sectionName = NormalizeCase(sectionName, _comparison);
+                    sectionName = NormalizeString(sectionName, _comparison);
 
                     // Add new section if not exists
                     if (!result.TryGetValue(sectionName, out currentDict))
@@ -2614,7 +2852,7 @@ namespace System.Ini
                     continue;
                 }
 
-                if (match.Groups["entry"].Success)
+                if (match.Groups[_groupEntry].Success)
                 {
                     // If no section yet, use global (empty key)
                     if (currentDict == null)
@@ -2627,15 +2865,15 @@ namespace System.Ini
                         }
                     }
 
-                    string key = match.Groups["key"].Value;
-                    string value = match.Groups["value"].Value;
+                    string key = match.Groups[_groupKey].Value;
+                    string value = match.Groups[_groupValue].Value;
 
                     // Unwrap/unescape if needed
                     if (_allowMultiLine) value = UnWrap(value);
                     if (_allowEscapeChars) value = UnEscape(value);
 
                     // Normalize key case
-                    key = NormalizeCase(key, _comparison);
+                    key = NormalizeString(key, _comparison);
 
                     if (!currentDict.TryGetValue(key, out List<string> values))
                     {
@@ -2678,9 +2916,9 @@ namespace System.Ini
             {
                 Match match = _matches[i];
 
-                if (match.Groups["section"].Success)
+                if (match.Groups[_groupSection].Success)
                 {
-                    string section = match.Groups["value"].Value;
+                    string section = match.Groups[_groupValue].Value;
                     if (!sectionEntries.ContainsKey(section))
                     {
                         sectionEntries[section] = new List<KeyValuePair<string, string>>(DefaultCapacity);
@@ -2690,10 +2928,10 @@ namespace System.Ini
                     continue;
                 }
 
-                if (match.Groups["entry"].Success)
+                if (match.Groups[_groupEntry].Success)
                 {
-                    string key = match.Groups["key"].Value;
-                    string value = match.Groups["value"].Value;
+                    string key = match.Groups[_groupKey].Value;
+                    string value = match.Groups[_groupValue].Value;
                     //if (_allowMultiLine) value = UnWrap(value);
                     //if (_allowEscapeChars) value = UnEscape(value);
 
@@ -3770,7 +4008,7 @@ namespace System.Ini
             {
                 Match match = _matches[i];
 
-                if (match.Groups["section"].Success)
+                if (match.Groups[_groupSection].Success)
                 {
                     // Close previous range if any.
                     if (currentStart >= 0)
@@ -3782,7 +4020,7 @@ namespace System.Ini
                     }
 
                     // Start new range if section matches.
-                    if (match.Groups["value"].Value.Equals(section, _comparison))
+                    if (match.Groups[_groupValue].Value.Equals(section, _comparison))
                         currentStart = match.Index;
                 }
                 // Entries are ignored – they're inside section ranges.
