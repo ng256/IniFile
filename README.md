@@ -25,6 +25,12 @@ It provides a convenient API for reading, writing, and deleting values, as well 
 
 ---
 
+## Installation
+
+Simply add `IniFile.cs` to your project and start using it. No external dependencies.
+
+---
+
 ## Quick Start
 
 ### Loading and Saving
@@ -50,14 +56,14 @@ You can customize the parser behavior by specifying the text encoding and string
 using System.Text;
 using System.Ini;
 
-// Load with a specific encoding
+// Load with a specific encoding.
 var ini = IniFile.Load("config.ini", Encoding.UTF8);
 
 // Create with custom string comparison rules.
 // StringComparison.OrdinalIgnoreCase makes key and section names case-insensitive.
 ini = IniFile.Create(StringComparison.OrdinalIgnoreCase);
 
-// Load with both encoding and comparison settings
+// Load with both encoding and comparison settings.
 ini = IniFile.Load("config.ini", Encoding.UTF8, StringComparison.OrdinalIgnoreCase);
 
 // ... 
@@ -119,14 +125,20 @@ Path = /var/cache/myapp
 
 ```csharp
 
-// Read values
+// Read values.
 string network = ini.ReadString("Host", "Network", "localhost");
 int port = ini.ReadInt32("Host", "Port", 8080);
-bool enabled = ini.ReadBoolean("Network", "Enabled", true); // Returns the default value (true) because the key is not found.
-string script = ini.ReadString("Environment", "Script"); // The surrounding braces are removed automatically.
-string[] paths = ini.ReadStrings("SearchPaths", "Path"); // Reads all values with the same key.
 
-// Write values
+// Returns the default value (true) because the key is not found.
+bool enabled = ini.ReadBoolean("Network", "Enabled", true);
+
+// The surrounding braces are removed automatically.
+string script = ini.ReadString("Environment", "Script"); 
+
+// Reads all values with the same key.
+string[] paths = ini.ReadStrings("SearchPaths", "Path");
+
+// Write values.
 ini.WriteString("Host", "Network", "192.168.1.1");
 ini.WriteInt32("Host", "Port", 9090);
 ini.WriteBoolean("Network", "Enabled", false);
@@ -135,23 +147,23 @@ ini.WriteBoolean("Network", "Enabled", false);
 ### Working with Multiple Values (Arrays)
 
 ```csharp
-// Write array
+// Write array.
 ini.WriteStrings("Servers", "Address", "10.0.0.1", "10.0.0.2", "10.0.0.3");
 
-// Read array
+// Read array.
 string[] addresses = ini.ReadStrings("Servers", "Address");
 ```
 
 ### Deleting Entries
 
 ```csharp
-// Remove first occurrence of a key
+// Remove first occurrence of a key.
 ini.RemoveKey("Network", "Port");
 
-// Remove all occurrences of a key
+// Remove all occurrences of a key.
 ini.RemoveKeys("Servers", "Address");
 
-// Remove entire section (all occurrences)
+// Remove entire section (all occurrences).
 ini.RemoveSection("Servers");
 ```
 
@@ -237,7 +249,8 @@ For quick access to file data without creating an instance:
 int port = IniFile.ReadFromFile<int>("config.ini", "Network", "Port", 8080);
 IniFile.WriteToFile("config.ini", "Network", "Port", 9090);
 
-// Convert the file contents to a dictionary representation (returns empty dictionary if file not found).
+// Convert the file contents to a dictionary representation
+// (returns empty dictionary if file not found).
 var dict = IniFile.ExportToDictionary("config.ini");
 foreach (var section in dict)
 {
@@ -265,22 +278,16 @@ Overloads with `Encoding` parameter are also available.
 
 | Category | Methods |
 |----------|---------|
-| **Read** | `ReadSections()`, `ReadKeys(string section)` |
+| **Read keys and sections** | `ReadSections()`, `ReadKeys(string section)` |
 | **Read values** | `ReadString`, `ReadStrings`, `Read<T>`, `ReadArray<T>`<br>`ReadBoolean`, `ReadInt32`, `ReadDouble`, `ReadDateTime`, `ReadChar`, ... |
-| **Write** | `WriteString`, `WriteStrings`, `Write<T>`, `WriteArray<T>`<br>`WriteBoolean`, `WriteInt32`, `WriteDouble`, `WriteDateTime`, `WriteChar`, ... |
-| **JSON** | `ReadJsonString`, `WriteJsonString`<br>`ReadJsonObject`, `WriteJsonObject`<br>`ReadJsonDynamicObject`, `WriteJsonDynamicObject` |
-| **Delete** | `RemoveKey`, `RemoveKeys`, `RemoveSection` |
-| **Serialization** | `ReadSettings`, `WriteSettings` (for objects), `ExportToDictionary` |
+| **Write values** | `WriteString`, `WriteStrings`, `Write<T>`, `WriteArray<T>`<br>`WriteBoolean`, `WriteInt32`, `WriteDouble`, `WriteDateTime`, `WriteChar`, ... |
+| **JSON support** | `ReadJsonString`, `WriteJsonString`<br>`ReadJsonObject`, `WriteJsonObject`<br>`ReadJsonDynamicObject`, `WriteJsonDynamicObject` |
+| **Delete keys and sections** | `RemoveKey`, `RemoveKeys`, `RemoveSection` |
+| **Serialization** | `ReadSettings`, `WriteSettings`, `ExportToDictionary` |
 | **Indexer** | `this[string section, string key]` |
 | **Static** | `Load`, `LoadOrCreate`, `Save`, `ReadFromFile<T>`, `WriteToFile<T>`, `ExportToDictionaryFile` |
 
 All methods accept `section = null` for global entries.
-
----
-
-## Installation
-
-Simply add `IniFile.cs` to your project and start using it. No external dependencies.
 
 ---
 
