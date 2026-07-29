@@ -224,11 +224,11 @@ namespace System.Ini
 
         // Indicates whether escape characters are allowed in the INI file.
         [NonSerialized]
-        private readonly bool _allowEscapeChars = false;
+        private readonly bool _allowEscapeChars;
 
         // Indicates whether multi line values are allowed in the INI file.
         [NonSerialized]
-        private readonly bool _allowMultiLine = false;
+        private readonly bool _allowMultiLine;
 
         // String used to represent line breaks in the INI file.
         [NonSerialized]
@@ -246,6 +246,7 @@ namespace System.Ini
         // Boolean values aliases.
         [NonSerialized]
         private readonly HashSet<string> _trueValues;
+
         [NonSerialized]
         private readonly HashSet<string> _falseValues;
 
@@ -317,14 +318,15 @@ namespace System.Ini
             _iniRegex = new Regex(@"(?=\S)(?<text>(?<comment>(?<open>[#;]+)(?:[^\S\r\n]*)(?<value>.+))|" +
                                     @"(?<section>(?<open>\[)(?:\s*)(?<value>[^\]]*\S+)(?:[^\S\r\n]*)(?<close>\]))|" +
                                     (allowMultiLine
-                                    ? @"(?<entry>(?<key>[^=\r\n\ [\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:\s*(?<value>\{(?:[^{}""]+|""(?:\\.|[^""])*""|(?<o>\{)|(?<-o>\}))*(?(o)(?!))\})|((?:[^\S\r\n]*)(?<value>[^#;\r\n]*))))|"
-                                    : @"(?<entry>(?<key>[^=\r\n\ [\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:[^\S\r\n]*)(?<value>[^#;\r\n]*))|") +
+                                    //? @"(?<entry>(?<key>[^=\r\n\ [\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:\s*(?<value>\{(?:[^{}""]+|""(?:\\.|[^""])*""|(?<o>\{)|(?<-o>\}))*(?(o)(?!))\})|((?:[^\S\r\n]*)(?<value>[^#;\r\n]*))))|"
+                                    ? @"(?<entry>(?<key>[^=:\r\n\[\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:\s*(?<value>\{(?:(?>(?:""(?:\\.|[^""])*""|//[^\r\n]*|/\*[\s\S]*?\*/|[^{}""/]+|/(?![/*])))|(?<o>\{)|(?<-o>\}))*(?(o)(?!))\})|((?:[^\S\r\n]*)(?<value>[^#;\r\n]*))))|"
+                                    : @"(?<entry>(?<key>[^=:\r\n\ [\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:[^\S\r\n]*)(?<value>[^#;\r\n]*))|") +
                                     @"(?<undefined>.+))(?<=\S)|" +
                                     @"(?<linebreaker>\r\n|\n)|" +
                                     @"(?<whitespace>[^\S\r\n]+)",
                                     regexOptions);
             _jsonRegex = new Regex(
-                                    @"(?<Comment>//.*|/\*.*?\*/)|" +
+                                    @"(?<Comment>//.*|/\*[\s\S]*?\*/)|" +
                                     @"(?<key>""[^""\\]*(?:\\.[^""\\]*)*"")(?=(?:\s|//.*|/\*.*?\*/)*:)|" +
                                     @"(?<value>(?<bool>true)|(?<bool>false)|(?<null>null)|""(?<string>[^""\\]*(?:\\.[^""\\]*)*)""|(?<number>-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?))|" +
                                     @"(?<value_sep>:)|(?<array_open>\[)|(?<array_sep>,)|(?<array_close>\])|" +
@@ -802,8 +804,12 @@ namespace System.Ini
 
                     value = match.Groups[_groupValue].Value;
 
-                    if (_allowMultiLine && unwrap) value = UnWrap(value);
-                    if (_allowEscapeChars) value = UnEscape(value);
+                    // Apply unwrapping and unescaping only for regular INI values (not JSON).
+                    if (unwrap)
+                    {
+                        if (_allowMultiLine) value = UnWrap(value);
+                        if (_allowEscapeChars) value = UnEscape(value);
+                    }
 
                     return value;
                 }
@@ -837,8 +843,11 @@ namespace System.Ini
                 {
                     string value = match.Groups[_groupValue].Value;
 
-                    if (_allowMultiLine && unwrap) value = UnWrap(value);
-                    if (_allowEscapeChars) value = UnEscape(value);
+                    if (unwrap)
+                    {
+                        if (_allowMultiLine) value = UnWrap(value);
+                        if (_allowEscapeChars) value = UnEscape(value);
+                    }
 
                     values.Add(value);
                 }
@@ -879,8 +888,11 @@ namespace System.Ini
 
                     string value = match.Groups[_groupValue].Value;
 
-                    if (_allowMultiLine && unwrap) value = UnWrap(value);
-                    if (_allowEscapeChars) value = UnEscape(value);
+                    if (unwrap)
+                    {
+                        if (_allowMultiLine) value = UnWrap(value);
+                        if (_allowEscapeChars) value = UnEscape(value);
+                    }
 
                     values.Add(value);
                 }
@@ -1151,6 +1163,18 @@ namespace System.Ini
 
         #region Internal JSON parsing and serialization methods
 
+        // Skips comments, whitespace, and newlines, advancing the index.
+        private void SkipWhitespaceAndComments(MatchCollection matches, ref int index)
+        {
+            while (index < matches.Count)
+            {
+                Match m = matches[index];
+                if (!m.Groups["Comment"].Success && !m.Groups["whitespace"].Success && !m.Groups["newline"].Success)
+                    break;
+                index++;
+            }
+        }
+
         // Parses the string containing JSON data.
         private object ParseJson(string json)
         {
@@ -1164,13 +1188,10 @@ namespace System.Ini
                     return null;
 
                 // Skip any remaining whitespace, comments, newlines
-                while (index < matches.Count)
-                {
-                    Match m = matches[index];
-                    if (!m.Groups["Comment"].Success && !m.Groups["whitespace"].Success && !m.Groups["newline"].Success)
-                        return null; // unexpected token after value
-                    index++;
-                }
+                SkipWhitespaceAndComments(matches, ref index);
+                /*if (index >= matches.Count) return false;
+                Match m = matches[index];*/
+
 
                 return result;
             }
@@ -1229,15 +1250,10 @@ namespace System.Ini
             if (index >= matches.Count)
                 return false;
 
-            Match m = matches[index];
-
             // Skip comments and whitespace.
-            while (m != null && (m.Groups["Comment"].Success || m.Groups["whitespace"].Success || m.Groups["newline"].Success))
-            {
-                index++;
-                if (index >= matches.Count) return false;
-                m = matches[index];
-            }
+            SkipWhitespaceAndComments(matches, ref index);
+            if (index >= matches.Count) return false;
+            Match m = matches[index];
 
             // Parse difference type of values.
 
@@ -1306,15 +1322,11 @@ namespace System.Ini
 
             while (index < matches.Count)
             {
-                Match m = matches[index];
 
                 // Skip whitespace/comments.
-                while (m != null && (m.Groups["Comment"].Success || m.Groups["whitespace"].Success || m.Groups["newline"].Success))
-                {
-                    index++;
-                    if (index >= matches.Count) return false;
-                    m = matches[index];
-                }
+                SkipWhitespaceAndComments(matches, ref index);
+                if (index >= matches.Count) return false;
+                Match m = matches[index];
 
                 // End of the object.
                 if (m.Groups["object_close"].Success)
@@ -1338,9 +1350,7 @@ namespace System.Ini
                     {
                         index++;
                         // Skip whitespace.
-                        while (index < matches.Count && (matches[index].Groups["Comment"].Success ||
-                               matches[index].Groups["whitespace"].Success || matches[index].Groups["newline"].Success))
-                            index++;
+                        SkipWhitespaceAndComments(matches, ref index);
                         if (index >= matches.Count) return false;
                         m = matches[index];
 
@@ -1375,9 +1385,7 @@ namespace System.Ini
                 index++;
 
                 // Skip whitespace.
-                while (index < matches.Count && (matches[index].Groups["Comment"].Success ||
-                       matches[index].Groups["whitespace"].Success || matches[index].Groups["newline"].Success))
-                    index++;
+                SkipWhitespaceAndComments(matches, ref index);
                 if (index >= matches.Count) return false;
                 m = matches[index];
 
@@ -1408,15 +1416,10 @@ namespace System.Ini
 
             while (index < matches.Count)
             {
-                Match m = matches[index];
-
                 // Skip whitespace/comments
-                while (m != null && (m.Groups["Comment"].Success || m.Groups["whitespace"].Success || m.Groups["newline"].Success))
-                {
-                    index++;
-                    if (index >= matches.Count) return false;
-                    m = matches[index];
-                }
+                SkipWhitespaceAndComments(matches, ref index);
+                if (index >= matches.Count) return false;
+                Match m = matches[index];
 
                 // End of array.
                 if (m.Groups["array_close"].Success)
@@ -1438,9 +1441,7 @@ namespace System.Ini
                     {
                         // Skip whitespace.
                         index++;
-                        while (index < matches.Count && (matches[index].Groups["Comment"].Success ||
-                               matches[index].Groups["whitespace"].Success || matches[index].Groups["newline"].Success))
-                            index++;
+                        SkipWhitespaceAndComments(matches, ref index);
                         if (index >= matches.Count) return false;
                         m = matches[index];
 
@@ -2272,12 +2273,11 @@ namespace System.Ini
             if (length < 2 || value[0] != '{' || value[length - 1] != '}')
                 return value;
 
-            // Find the first non-space/tab character after the opening brace.
+            // trim whitespace characters.
             int start = 1;
             while (start < length - 1 && (value[start] == ' ' || value[start] == '\t'))
                 start++;
 
-            // Find the last non-space/tab character before the closing brace.
             int end = length - 2;
             while (end >= start && (value[end] == ' ' || value[end] == '\t'))
                 end--;
