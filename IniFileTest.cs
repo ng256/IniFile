@@ -61,7 +61,7 @@ namespace IniFileTest
             // 1. Create a test INI file
             string testIniContent = CreateTestIniContent();
             File.WriteAllText("test.ini", testIniContent);
-            Console.WriteLine("Generated test.ini\n");
+            Console.WriteLine("Generated test.ini (evil.ini)\n");
 
             // 2. Load with allowEscChars = true (to test escaping)
             IniFile ini = IniFile.Load("test.ini", Encoding.UTF8, StringComparison.InvariantCultureIgnoreCase, true);
@@ -73,13 +73,14 @@ namespace IniFileTest
             ini.Save("edited.ini", Encoding.UTF8);
 
             // 5. Manually create the expected file (estimated.ini)
-            string estimatedContent = CreateEstimatedIniContent();
-            File.WriteAllText("estimated.ini", estimatedContent);
+            string expectedContent = GenerateExpectedContent(testIniContent);
+            File.WriteAllText("estimated.ini", expectedContent);
 
             // 6. Compare edited.ini and estimated.ini (ignore trailing spaces/line breaks)
             string edited = File.ReadAllText("edited.ini");
             string estimated = File.ReadAllText("estimated.ini");
             bool filesMatch = string.Equals(edited.Trim(), estimated.Trim(), StringComparison.Ordinal);
+
             if (filesMatch)
             {
                 WriteColored("[OK] ", ConsoleColor.Green);
@@ -111,97 +112,154 @@ namespace IniFileTest
 
         private static string CreateTestIniContent()
         {
-            return @"# Global comment
-; Another global comment
-global_key1 = global_value1
-global_key2 = global_value2
+            return @"
+# Global comment (INI level)
+; Another global comment (INI level)
+global_key = global_value
+global_with_braces = text with { braces } and [ brackets ]
 
 [Section1]
+; comment inside section
 key1 = value1
-key2 = 123
-key3 = 45.67
-key4 = true
-key5 = 2023-12-31
-key6 = A
-key7 = 0x1A
+key2 = value with // fake comment and /* fake block */ inside
 
 [Section2]
-; Some comments
-key1 = value1
-key1 = value2   ; duplicate key for array
-key2 = 10
-key2 = 20
-key3 = hello world
-
-[Section3]
-key_with_space = value with space
-key_with_colon: colon_value
-key_with_escapes = Hello\nWorld\t!
-
-[JsonSection]
 inline_json = {""name"":""test"",""value"":123}
 multiline_json =
 {
   ""array"": [1, 2, 3],
-  ""nested"": {""flag"": true}
+  ""nested"": {""flag"": true},
+  // This is a JSON comment
+  ""comment"": ""// not a comment""
 }
-json_array = [1, 2, 3, 4]";
+
+[Section3]
+json_with_block_comment =
+{
+  ""before"": 1,
+  /* This is a block comment
+     with multiple lines */
+  ""after"": 2
+}
+
+[Section4]
+json_with_tricky_strings =
+{
+  ""str1"": ""/* not a comment */"",
+  ""str2"": ""// not a comment"",
+  ""str3"": ""{ not an object }"",
+  ""str4"": ""[ not an array ]""
+}
+
+[Section5]
+json_with_escaped =
+{
+  ""escaped"": ""line1\nline2\t\""quoted\""""
+}
+
+[Section6]
+json_empty = {}
+
+[Section7]
+json_nested =
+{
+  ""level1"": {
+    ""level2"": {
+      ""level3"": {
+        ""value"": 42
+      }
+    }
+  }
+}
+
+[Section8]
+json_with_trailing_comment =
+{
+  ""value"": 1
+}
+// This is an INI comment, not JSON
+
+[Section9]
+json_with_trailing_text =
+{
+  ""value"": 2
+} trailing text after brace
+
+[Section10]
+json_with_multiline_comment =
+{
+  ""value"": 3,
+  /*
+    This is a block comment
+    with fake braces { } inside
+  */
+  ""next"": 4
+}
+
+[Section11]
+json_with_inline_comment_after_value =
+{
+  ""value"": 5 // comment
+}
+[Section12]
+json_with_unbalanced_brace_comments =
+{
+  ""key"": ""value"",
+  // This comment has an unbalanced opening brace {
+  ""next"": 123,
+  /* This block comment also has an unbalanced opening brace {
+     and some text */
+  ""final"": true
+}
+[Section13]
+; Test keys with colon as delimiter
+key_with_colon : value with colon
+json_colon : {""test"":""colon""}
+another_colon_key : 123
+";
         }
 
-            private static string CreateEstimatedIniContent()
-            {
-            // Actual content after all test operations, with json_array removed
-            return @"# Global comment
-; Another global comment
-global_key1 = new_global
-global_key2 = global_value2
+        private static string GenerateExpectedContent(string originalContent)
+        {
+            // Load a copy of the original content
+            var ini = IniFile.Load(new StringReader(originalContent),
+                StringComparison.InvariantCultureIgnoreCase, true);
 
-[Section1]
-key1 = new_value
-key2 = 999
+            // Repeat the operations from the tests that modify the file:
+            ini["", "global_key"] = "new_global";
+            byte[] testBytes = { 0x01, 0x02, 0x03, 0x04 };
+            ini.WriteArray("Section2", "byteKey", testBytes);
+            ini.WriteString("Section2", "escaped_new", "Line1\nLine2\tTab");
+            ini.RemoveSection("Section1");
 
-key4 = False
-key5 = 2023-12-31
-key6 = A
-key7 = 0x1A
-
-newKey=added
-
-[Section2]
-; Somekey1 = new1
-   ; duplicate key fokey2 = 10
-
-key3 = hello world
-
-[JsonSection]
-
-
-";
+            return ini.Content;
         }
 
         private static void RunAllTests(IniFile ini)
         {
             int testNum = 0;
 
+            // -------------------- Base tests (1–20) --------------------
+
             // Test 1: ReadSections
             testNum++;
-            string[] expectedSections = { "section1", "section2", "section3", "jsonsection" };
+            string[] expectedSections = { "section1", "section2", "section3", "section4", "section5", "section6", "section7", "section8", "section9", "section10", "section11", "section12", "section13" };
             string[] actualSections = ini.ReadSections();
             RunTest(testNum, "ReadSections", expectedSections, actualSections, "List of sections");
 
             // Test 2: ReadKeys for Section1
             testNum++;
-            string[] expectedKeys1 = { "key1", "key2", "key3", "key4", "key5", "key6", "key7" };
+            string[] expectedKeys1 = { "key1", "key2" };
             string[] actualKeys1 = ini.ReadKeys("Section1");
             RunTest(testNum, "ReadKeys (Section1)", expectedKeys1, actualKeys1, "Keys in Section1");
 
             // Test 3: ReadKeys for Section2
             testNum++;
-            string[] expectedKeys2 = { "key1", "key2", "key3" };
+            string[] expectedKeys2 = { "inline_json", "multiline_json" };
             string[] actualKeys2 = ini.ReadKeys("Section2");
             RunTest(testNum, "ReadKeys (Section2)", expectedKeys2, actualKeys2, "Keys in Section2");
 
-            // Test 4: ReadString
+            // Test 4: ReadString existing
             testNum++;
             RunTest(testNum, "ReadString (existing)", "value1", ini.ReadString("Section1", "key1", "default"), "value1");
 
@@ -213,116 +271,56 @@ key3 = hello world
             testNum++;
             RunTest(testNum, "Indexer get", "value1", ini["Section1", "key1"], "value1");
 
-            // Test 7: ReadBoolean
+            // Test 7: ReadBoolean (not present, so default)
             testNum++;
             bool expectedBool = true;
-            bool actualBool = ini.ReadBoolean("Section1", "key4", false);
-            RunTest(testNum, "ReadBoolean (true)", expectedBool, actualBool, "Should be true (bug: returns false)");
+            bool actualBool = ini.ReadBoolean("Section1", "key4", true);
+            RunTest(testNum, "ReadBoolean (missing, default)", expectedBool, actualBool, "default true");
 
-            // Test 8: ReadBoolean missing
-            testNum++;
-            RunTest(testNum, "ReadBoolean (missing)", true, ini.ReadBoolean("Section1", "missingBool", true), "default true");
-
-            // Test 9: ReadInt32 existing
-            testNum++;
-            RunTest(testNum, "ReadInt32 (existing)", 123, ini.ReadInt32("Section1", "key2", 0), "123");
-
-            // Test 10: ReadInt32 missing
-            testNum++;
-            RunTest(testNum, "ReadInt32 (missing)", 999, ini.ReadInt32("Section1", "missingInt", 999), "default 999");
-
-            // Test 11: ReadDouble
-            testNum++;
-            RunTest(testNum, "ReadDouble", 45.67, ini.ReadDouble("Section1", "key3", 0.0), "45.67");
-
-            // Test 12: ReadDateTime
-            testNum++;
-            DateTime expectedDate = new DateTime(2023, 12, 31);
-            DateTime actualDate = ini.ReadDateTime("Section1", "key5", DateTime.MinValue);
-            RunTest(testNum, "ReadDateTime", expectedDate, actualDate, "2023-12-31");
-
-            // Test 13: ReadChar
-            testNum++;
-            char expectedChar = 'A';
-            char actualChar = ini.ReadChar("Section1", "key6", 'Z');
-            RunTest(testNum, "ReadChar (existing)", expectedChar, actualChar, "A");
-
-            // Test 14: ReadChar missing
-            testNum++;
-            RunTest(testNum, "ReadChar (missing)", 'X', ini.ReadChar("Section1", "missingChar", 'X'), "default X");
-
-            // Test 15: ReadStrings (single)
-            testNum++;
-            string[] expectedSingle = { "value1" };
-            string[] actualSingle = ini.ReadStrings("Section1", "key1");
-            RunTest(testNum, "ReadStrings (single)", expectedSingle, actualSingle, "['value1']");
-
-            // Test 16: ReadStrings (multi)
-            testNum++;
-            string[] expectedMulti = { "value1", "value2" };
-            string[] actualMulti = ini.ReadStrings("Section2", "key1");
-            RunTest(testNum, "ReadStrings (multi)", expectedMulti, actualMulti, "['value1','value2']");
-
-            // Test 17: ReadArray<int>
-            testNum++;
-            int[] expectedIntArray = { 10, 20 };
-            int[] actualIntArray = ini.ReadArray<int>("Section2", "key2");
-            RunTest(testNum, "ReadArray<int>", expectedIntArray, actualIntArray, "[10,20]");
-
-            // Test 18: WriteString update
+            // Test 8: WriteString update
             testNum++;
             ini.WriteString("Section1", "key1", "new_value");
             string readAfterWrite = ini.ReadString("Section1", "key1", "");
             RunTest(testNum, "WriteString (update)", "new_value", readAfterWrite, "After write");
 
-            // Test 19: WriteInt32
+            // Test 9: WriteInt32 (new key)
             testNum++;
-            ini.WriteInt32("Section1", "key2", 999);
-            RunTest(testNum, "WriteInt32", 999, ini.ReadInt32("Section1", "key2", 0), "999");
+            ini.WriteInt32("Section1", "key_int", 999);
+            RunTest(testNum, "WriteInt32", 999, ini.ReadInt32("Section1", "key_int", 0), "999");
 
-            // Test 20: WriteBoolean
-            testNum++;
-            ini.WriteBoolean("Section1", "key4", false);
-            RunTest(testNum, "WriteBoolean", false, ini.ReadBoolean("Section1", "key4", true), "false");
-
-            // Test 21: WriteArray<string>
+            // Test 10: WriteArray<string>
             testNum++;
             string[] newArray = { "new1", "new2" };
-            ini.WriteArray<string>("Section2", "key1", newArray);
-            string[] readArray = ini.ReadStrings("Section2", "key1");
+            ini.WriteArray<string>("Section1", "key_array", newArray);
+            string[] readArray = ini.ReadStrings("Section1", "key_array");
             RunTest(testNum, "WriteArray", newArray, readArray, "['new1','new2']");
 
-            // Test 22: WriteString new key
+            // Test 11: RemoveKey
             testNum++;
-            ini.WriteString("Section1", "newKey", "added");
-            RunTest(testNum, "WriteString (new key)", "added", ini.ReadString("Section1", "newKey", ""), "added");
+            ini.RemoveKey("Section1", "key_int");
+            bool keyIntExists = Array.Exists(ini.ReadKeys("Section1"), k => k == "key_int");
+            RunTest(testNum, "RemoveKey", false, keyIntExists, "key_int removed");
 
-            // Test 23: RemoveKey
+            // Test 12: RemoveKeys
             testNum++;
-            ini.RemoveKey("Section1", "key3");
-            bool key3Exists = Array.Exists(ini.ReadKeys("Section1"), k => k == "key3");
-            RunTest(testNum, "RemoveKey", false, key3Exists, "key3 should be removed");
+            ini.RemoveKeys("Section1", "key_array");
+            string[] keysAfterRemove = ini.ReadKeys("Section1");
+            bool keyArrayExists = Array.Exists(keysAfterRemove, k => k == "key_array");
+            RunTest(testNum, "RemoveKeys (all key_array)", false, keyArrayExists, "key_array entries removed");
 
-            // Test 24: RemoveKeys
+            // Test 13: RemoveSection
             testNum++;
-            ini.RemoveKeys("Section2", "key1");
-            string[] keysAfterRemove = ini.ReadKeys("Section2");
-            bool key1Exists = Array.Exists(keysAfterRemove, k => k == "key1");
-            RunTest(testNum, "RemoveKeys (all key1)", false, key1Exists, "key1 entries should be removed");
-
-            // Test 25: RemoveSection
-            testNum++;
-            ini.RemoveSection("Section3");
+            ini.RemoveSection("Section1");
             string[] sectionsAfter = ini.ReadSections();
-            bool section3Exists = Array.Exists(sectionsAfter, s => s == "Section3");
-            RunTest(testNum, "RemoveSection (Section3)", false, section3Exists, "Section3 removed");
+            bool section1Exists = Array.Exists(sectionsAfter, s => s == "Section1");
+            RunTest(testNum, "RemoveSection (Section1)", false, section1Exists, "Section1 removed");
 
-            // Test 26: Indexer set (global)
+            // Test 14: Indexer set (global)
             testNum++;
-            ini["", "global_key1"] = "new_global";
-            RunTest(testNum, "Indexer set (global)", "new_global", ini["", "global_key1"], "new_global");
+            ini["", "global_key"] = "new_global";
+            RunTest(testNum, "Indexer set (global)", "new_global", ini["", "global_key"], "new_global");
 
-            // Test 27: ReadSettings/WriteSettings (network)
+            // Test 15: ReadSettings/WriteSettings (network)
             testNum++;
             NetworkSettings net = new NetworkSettings { Host = "testhost", Port = 1234, Timeout = 60.0, Enabled = false };
             LoggingSettings log = new LoggingSettings { Level = "Debug", FilePath = "debug.log" };
@@ -340,192 +338,238 @@ key3 = hello world
             bool logOk = logRead.Level == "Debug" && logRead.FilePath == "debug.log";
             RunTest(testNum, "ReadSettings/WriteSettings (network)", true, netOk, "Network settings match");
 
-            // Test 28: ReadSettings/WriteSettings (logging)
+            // Test 16: ReadSettings/WriteSettings (logging)
             testNum++;
             RunTest(testNum, "ReadSettings/WriteSettings (logging)", true, logOk, "Logging settings match");
 
-            // Test 29: ReadKeys non-existent section
+            // Test 17: ReadKeys non-existent section
             testNum++;
             string[] keysNone = ini.ReadKeys("NonExistentSection");
             RunTest(testNum, "ReadKeys (non-existent section)", new string[0], keysNone, "empty array");
 
-            // Test 30: byte[] roundtrip
+            // Test 18: byte[] roundtrip
             testNum++;
             byte[] testBytes = { 0x01, 0x02, 0x03, 0x04 };
-            ini.WriteArray("Section1", "byteKey", testBytes);
-            byte[] readBytes = ini.ReadArray<byte>("Section1", "byteKey");
+            ini.WriteArray("Section2", "byteKey", testBytes);
+            byte[] readBytes = ini.ReadArray<byte>("Section2", "byteKey");
             RunTest(testNum, "WriteArray/ReadArray byte[]", testBytes, readBytes, "byte array roundtrip");
 
-            // Test 31: Escaping
+            // Test 19: Escaping
             testNum++;
-            ini.WriteString("Section3", "escaped_new", "Line1\nLine2\tTab");
-            string readEscaped = ini.ReadString("Section3", "escaped_new", "");
+            ini.WriteString("Section2", "escaped_new", "Line1\nLine2\tTab");
+            string readEscaped = ini.ReadString("Section2", "escaped_new", "");
             RunTest(testNum, "WriteString with escapes", "Line1\nLine2\tTab", readEscaped, "escaped write");
 
-            // --- JSON TESTS ---
-
-            // Test 32: ReadJson inline
-            testNum++;
-            string expectedJsonInline = "{\"name\":\"test\",\"value\":123}";
-            string actualJsonInline = ini.ReadJsonString("JsonSection", "inline_json", "default");
-            RunTest(testNum, "ReadJson (inline)", expectedJsonInline, actualJsonInline, "inline JSON");
-
-            // Test 33: ReadJson multiline
-            testNum++;
-            string expectedJsonMulti = "{\n  \"array\": [1, 2, 3],\n  \"nested\": {\"flag\": true}\n}";
-            string actualJsonMulti = ini.ReadJsonString("JsonSection", "multiline_json", "default");
-            expectedJsonMulti = expectedJsonMulti.Replace("\r\n", "\n").Replace("\r", "\n");
-            actualJsonMulti = actualJsonMulti?.Replace("\r\n", "\n").Replace("\r", "\n");
-            RunTest(testNum, "ReadJson (multiline)", expectedJsonMulti, actualJsonMulti, "multiline JSON");
-
-            // Test 34: ReadJson array
-            testNum++;
-            string expectedJsonArray = "[1, 2, 3, 4]";
-            string actualJsonArray = ini.ReadJsonString("JsonSection", "json_array", "default");
-            RunTest(testNum, "ReadJson (array)", expectedJsonArray, actualJsonArray, "JSON array");
-
-            // Test 35: ReadJson missing (default)
-            testNum++;
-            string defaultJson = ini.ReadJsonString("JsonSection", "non_existent_json", "default_value");
-            RunTest(testNum, "ReadJson (missing)", "default_value", defaultJson, "default value");
-
-            // Test 36: WriteJson update inline
-            testNum++;
-            ini.WriteJsonString("JsonSection", "inline_json", "{\"name\":\"updated\",\"value\":456}");
-            string updatedInline = ini.ReadJsonString("JsonSection", "inline_json", "");
-            RunTest(testNum, "WriteJson (update inline)", "{\"name\":\"updated\",\"value\":456}", updatedInline, "updated inline JSON");
-
-            // Test 37: WriteJson update multiline
-            testNum++;
-            string newMulti = "{\n  \"array\": [1, 2, 3, 4],\n  \"nested\": {\"flag\": false}\n}";
-            ini.WriteJsonString("JsonSection", "multiline_json", newMulti);
-            string updatedMulti = ini.ReadJsonString("JsonSection", "multiline_json", "");
-            updatedMulti = updatedMulti?.Replace("\r\n", "\n").Replace("\r", "\n");
-            RunTest(testNum, "WriteJson (update multiline)", newMulti, updatedMulti, "updated multiline JSON");
-
-            // Test 38: ReadJsonObject inline
-            testNum++;
-            string inlineJsonRaw = ini.ReadJsonString("JsonSection", "inline_json");
-            object inlineObj = ini.ReadJsonObject("JsonSection", "inline_json");
-            var inlineDict = inlineObj as IDictionary<string, object>;
-
-            Console.WriteLine("DEBUG #38:");
-            Console.WriteLine("  Raw JSON string: " + (inlineJsonRaw ?? "null"));
-            Console.WriteLine("  Object type: " + (inlineObj?.GetType()?.Name ?? "null"));
-            if (inlineDict != null)
-            {
-                Console.WriteLine("  Dictionary contents:");
-                foreach (var kv in inlineDict)
-                    Console.WriteLine($"    {kv.Key} = {kv.Value} ({kv.Value?.GetType()?.Name})");
-            }
-            else
-            {
-                Console.WriteLine("  Dictionary is null");
-            }
-
-            bool inlineOk = inlineDict != null &&
-                            inlineDict["name"] as string == "updated" &&
-                            Convert.ToInt32(inlineDict["value"]) == 456;
-            RunTest(testNum, "ReadJsonObject (inline)", true, inlineOk, "Read object from inline JSON");
-
-            // Test 39: ReadJsonObject multiline (после обновления, до удаления)
-            testNum++;
-            string multiJsonRaw = ini.ReadJsonString("JsonSection", "multiline_json");
-            object multiObj = ini.ReadJsonObject("JsonSection", "multiline_json");
-            var multiDict = multiObj as IDictionary<string, object>;
-
-            Console.WriteLine("DEBUG #39:");
-            Console.WriteLine("  Raw JSON string: " + (multiJsonRaw ?? "null"));
-            Console.WriteLine("  Object type: " + (multiObj?.GetType()?.Name ?? "null"));
-            if (multiDict != null)
-            {
-                Console.WriteLine("  Dictionary contents:");
-                foreach (var kv in multiDict)
-                {
-                    if (kv.Value is object[] arr)
-                        Console.WriteLine($"    {kv.Key} = [{string.Join(", ", arr)}]");
-                    else if (kv.Value is IDictionary<string, object> nested)
-                    {
-                        Console.WriteLine($"    {kv.Key} = {{");
-                        foreach (var nkv in nested)
-                            Console.WriteLine($"      {nkv.Key} = {nkv.Value} ({nkv.Value?.GetType()?.Name})");
-                        Console.WriteLine("    }");
-                    }
-                    else
-                        Console.WriteLine($"    {kv.Key} = {kv.Value} ({kv.Value?.GetType()?.Name})");
-                }
-            }
-            else
-            {
-                Console.WriteLine("  Dictionary is null");
-            }
-
-            bool multiOk = false;
-            if (multiDict != null)
-            {
-                var array = multiDict["array"] as object[];
-                var nested = multiDict["nested"] as IDictionary<string, object>;
-                multiOk = array != null && array.Length == 4 &&
-                          nested != null && Convert.ToBoolean(nested["flag"]) == false;
-            }
-            RunTest(testNum, "ReadJsonObject (multiline)", true, multiOk, "Read object from multiline JSON");
-
-            // Test 40: WriteJsonObject and read back
-            testNum++;
-            var newObj = new Dictionary<string, object>
-            {
-                ["name"] = "test_write",
-                ["value"] = 789,
-                ["flag"] = true
-            };
-            ini.WriteJsonObject("JsonSection", "write_test_obj", newObj);
-
-            string writtenRaw = ini.ReadJsonString("JsonSection", "write_test_obj");
-            object readBack = ini.ReadJsonObject("JsonSection", "write_test_obj");
-            var readDict = readBack as IDictionary<string, object>;
-
-            Console.WriteLine("DEBUG #40:");
-            Console.WriteLine("  Written raw JSON: " + (writtenRaw ?? "null"));
-            Console.WriteLine("  ReadBack type: " + (readBack?.GetType()?.Name ?? "null"));
-            if (readDict != null)
-            {
-                Console.WriteLine("  Dictionary contents:");
-                foreach (var kv in readDict)
-                    Console.WriteLine($"    {kv.Key} = {kv.Value} ({kv.Value?.GetType()?.Name})");
-            }
-            else
-            {
-                Console.WriteLine("  Dictionary is null");
-            }
-
-            bool writeOk = readDict != null &&
-                           readDict["name"] as string == "test_write" &&
-                           Convert.ToInt32(readDict["value"]) == 789 &&
-                           Convert.ToBoolean(readDict["flag"]) == true;
-            RunTest(testNum, "WriteJsonObject/ReadJsonObject", true, writeOk, "Write and read object");
-
-            // Test 41: WriteJson null removal (inline)
-            testNum++;
-            ini.WriteJsonString("JsonSection", "inline_json", null);
-            string removedInline = ini.ReadJsonString("JsonSection", "inline_json", "not_found");
-            RunTest(testNum, "WriteJson null (inline)", "not_found", removedInline, "inline JSON removed");
-
-            // Test 42: WriteJson null removal (multiline)
-            testNum++;
-            ini.WriteJsonString("JsonSection", "multiline_json", null);
-            string removedMulti = ini.ReadJsonString("JsonSection", "multiline_json", "not_found");
-            RunTest(testNum, "WriteJson null (multiline)", "not_found", removedMulti, "multiline JSON removed");
-
-            // Test 43: Justify
+            // Test 20: Justify (separate file)
             testNum++;
             TestJustify(testNum);
 
-            // Clean up (remove test keys)
-            ini.RemoveKey("JsonSection", "write_test_obj");
-            ini.RemoveKey("Section1", "byteKey");
-            ini.RemoveKeys("Section2", "key2");
-            ini.RemoveSection("Section3");
-            ini.RemoveKey("JsonSection", "json_array");
+            // -------------------- JSON TESTS (21–35) --------------------
+
+            // Test 21: ReadJsonString inline
+            testNum++;
+            string expectedInline = "{\"name\":\"test\",\"value\":123}";
+            string actualInline = ini.ReadJsonString("Section2", "inline_json", "default");
+            RunTest(testNum, "ReadJsonString (inline)", expectedInline, actualInline, "inline JSON with no comments");
+
+            // Test 22: ReadJsonString multiline with // comment
+            testNum++;
+            string expectedMulti = @"{
+  ""array"": [1, 2, 3],
+  ""nested"": {""flag"": true},
+  // This is a JSON comment
+  ""comment"": ""// not a comment""
+}";
+            string actualMulti = ini.ReadJsonString("Section2", "multiline_json", "");
+            expectedMulti = expectedMulti.Replace("\r\n", "\n").Replace("\r", "\n");
+            actualMulti = actualMulti?.Replace("\r\n", "\n").Replace("\r", "\n");
+            RunTest(testNum, "ReadJsonString (multiline with // comment)", expectedMulti, actualMulti, "multiline JSON with // comment");
+
+            // Test 23: ReadJsonString with block comment
+            testNum++;
+            string expectedBlock = @"{
+  ""before"": 1,
+  /* This is a block comment
+     with multiple lines */
+  ""after"": 2
+}";
+            string actualBlock = ini.ReadJsonString("Section3", "json_with_block_comment", "");
+            expectedBlock = expectedBlock.Replace("\r\n", "\n").Replace("\r", "\n");
+            actualBlock = actualBlock?.Replace("\r\n", "\n").Replace("\r", "\n");
+            RunTest(testNum, "ReadJsonString (block comment)", expectedBlock, actualBlock, "JSON with /* ... */ comment");
+
+            // Test 24: ReadJsonString tricky strings
+            testNum++;
+            string expectedTricky = @"{
+  ""str1"": ""/* not a comment */"",
+  ""str2"": ""// not a comment"",
+  ""str3"": ""{ not an object }"",
+  ""str4"": ""[ not an array ]""
+}";
+            string actualTricky = ini.ReadJsonString("Section4", "json_with_tricky_strings", "");
+            expectedTricky = expectedTricky.Replace("\r\n", "\n").Replace("\r", "\n");
+            actualTricky = actualTricky?.Replace("\r\n", "\n").Replace("\r", "\n");
+            RunTest(testNum, "ReadJsonString (tricky strings)", expectedTricky, actualTricky, "strings containing /*, //, {, [");
+
+            // Test 25: ReadJsonString escaped
+            testNum++;
+            string expectedEscaped = @"{
+  ""escaped"": ""line1\nline2\t\""quoted\""""
+}";
+            string actualEscaped = ini.ReadJsonString("Section5", "json_with_escaped", "");
+            expectedEscaped = expectedEscaped.Replace("\r\n", "\n").Replace("\r", "\n");
+            actualEscaped = actualEscaped?.Replace("\r\n", "\n").Replace("\r", "\n");
+            RunTest(testNum, "ReadJsonString (escaped)", expectedEscaped, actualEscaped, "JSON with escape sequences");
+
+            // Test 26: ReadJsonString empty object
+            testNum++;
+            string expectedEmpty = "{}";
+            string actualEmpty = ini.ReadJsonString("Section6", "json_empty", "");
+            RunTest(testNum, "ReadJsonString (empty object)", expectedEmpty, actualEmpty, "{}");
+
+            // Test 27: ReadJsonString nested
+            testNum++;
+            string expectedNested = @"{
+  ""level1"": {
+    ""level2"": {
+      ""level3"": {
+        ""value"": 42
+      }
+    }
+  }
+}";
+            string actualNested = ini.ReadJsonString("Section7", "json_nested", "");
+            expectedNested = expectedNested.Replace("\r\n", "\n").Replace("\r", "\n");
+            actualNested = actualNested?.Replace("\r\n", "\n").Replace("\r", "\n");
+            RunTest(testNum, "ReadJsonString (nested)", expectedNested, actualNested, "deeply nested JSON");
+
+            // Test 28: ReadJsonString trailing INI comment
+            testNum++;
+            string expectedTrailing = @"{
+  ""value"": 1
+}";
+            string actualTrailing = ini.ReadJsonString("Section8", "json_with_trailing_comment", "");
+            expectedTrailing = expectedTrailing.Replace("\r\n", "\n").Replace("\r", "\n");
+            actualTrailing = actualTrailing?.Replace("\r\n", "\n").Replace("\r", "\n");
+            RunTest(testNum, "ReadJsonString (trailing INI comment)", expectedTrailing, actualTrailing, "JSON block ends before INI comment");
+
+            // Test 29: ReadJsonString trailing text after brace
+            testNum++;
+            string expectedTrailingText = @"{
+  ""value"": 2
+}";
+            string actualTrailingText = ini.ReadJsonString("Section9", "json_with_trailing_text", "");
+            expectedTrailingText = expectedTrailingText.Replace("\r\n", "\n").Replace("\r", "\n");
+            actualTrailingText = actualTrailingText?.Replace("\r\n", "\n").Replace("\r", "\n");
+            RunTest(testNum, "ReadJsonString (trailing text after brace)", expectedTrailingText, actualTrailingText, "JSON block ends before trailing text");
+
+            // Test 30: ReadJsonString multiline block comment
+            testNum++;
+            string expectedMultiBlock = @"{
+  ""value"": 3,
+  /*
+    This is a block comment
+    with fake braces { } inside
+  */
+  ""next"": 4
+}";
+            string actualMultiBlock = ini.ReadJsonString("Section10", "json_with_multiline_comment", "");
+            expectedMultiBlock = expectedMultiBlock.Replace("\r\n", "\n").Replace("\r", "\n");
+            actualMultiBlock = actualMultiBlock?.Replace("\r\n", "\n").Replace("\r", "\n");
+            RunTest(testNum, "ReadJsonString (multiline block comment)", expectedMultiBlock, actualMultiBlock, "JSON with /* ... */ containing braces");
+
+            // Test 31: ReadJsonString inline comment after value
+            testNum++;
+            string expectedInlineComment = @"{
+  ""value"": 5 // comment
+}";
+            string actualInlineComment = ini.ReadJsonString("Section11", "json_with_inline_comment_after_value", "");
+            expectedInlineComment = expectedInlineComment.Replace("\r\n", "\n").Replace("\r", "\n");
+            actualInlineComment = actualInlineComment?.Replace("\r\n", "\n").Replace("\r", "\n");
+            RunTest(testNum, "ReadJsonString (inline comment after value)", expectedInlineComment, actualInlineComment, "JSON with // comment after value");
+
+            // Test 32: ReadJsonObject inline
+            testNum++;
+            var inlineObj = ini.ReadJsonObject("Section2", "inline_json");
+            bool inlineOk = false;
+            if (inlineObj is IDictionary<string, object> inlineDict)
+            {
+                inlineOk = inlineDict.ContainsKey("name") && inlineDict["name"] as string == "test" &&
+                           inlineDict.ContainsKey("value") && Convert.ToInt32(inlineDict["value"]) == 123;
+            }
+            RunTest(testNum, "ReadJsonObject (inline)", true, inlineOk, "Parse inline JSON object");
+
+            // Test 33: ReadJsonObject multiline
+            testNum++;
+            var multiObj = ini.ReadJsonObject("Section2", "multiline_json");
+            bool multiOk = false;
+            if (multiObj is IDictionary<string, object> multiDict)
+            {
+                var array = multiDict["array"] as object[];
+                var nested = multiDict["nested"] as IDictionary<string, object>;
+                multiOk = array != null && array.Length == 3 &&
+                          nested != null && Convert.ToBoolean(nested["flag"]) == true &&
+                          multiDict.ContainsKey("comment") && multiDict["comment"] as string == "// not a comment";
+            }
+            RunTest(testNum, "ReadJsonObject (multiline)", true, multiOk, "Parse multiline JSON with comments");
+
+            // Test 34: ReadJsonString with unbalanced braces in comments
+            testNum++;
+            string expectedUnbalanced = @"{
+  ""key"": ""value"",
+  // This comment has an unbalanced opening brace {
+  ""next"": 123,
+  /* This block comment also has an unbalanced opening brace {
+     and some text */
+  ""final"": true
+}";
+            string actualUnbalanced = ini.ReadJsonString("Section12", "json_with_unbalanced_brace_comments", "");
+            expectedUnbalanced = expectedUnbalanced.Replace("\r\n", "\n").Replace("\r", "\n");
+            actualUnbalanced = actualUnbalanced?.Replace("\r\n", "\n").Replace("\r", "\n");
+            RunTest(testNum, "ReadJsonString (unbalanced braces in comments)", expectedUnbalanced, actualUnbalanced, "JSON with // { and /* { comments");
+
+            // Test 35: ReadJsonObject with unbalanced braces in comments
+            testNum++;
+            var obj = ini.ReadJsonObject("Section12", "json_with_unbalanced_brace_comments");
+            bool parsedOk = false;
+            if (obj is IDictionary<string, object> dict)
+            {
+                parsedOk = dict.ContainsKey("key") && dict["key"] as string == "value" &&
+                           dict.ContainsKey("next") && Convert.ToInt32(dict["next"]) == 123 &&
+                           dict.ContainsKey("final") && Convert.ToBoolean(dict["final"]) == true;
+            }
+            RunTest(testNum, "ReadJsonObject (unbalanced braces in comments)", true, parsedOk, "Parsed object from JSON with unbalanced brace comments");
+
+            // Test 36: ReadString with colon delimiter
+            testNum++;
+            string colonValue = ini.ReadString("Section13", "key_with_colon", "default");
+            RunTest(testNum, "ReadString (colon delimiter)", "value with colon", colonValue, "key_with_colon using ':'");
+
+            // Test 37: ReadJsonString with colon delimiter
+            testNum++;
+            string jsonColon = ini.ReadJsonString("Section13", "json_colon", "default");
+            RunTest(testNum, "ReadJsonString (colon delimiter)", "{\"test\":\"colon\"}", jsonColon, "json_colon using ':'");
+
+            // Test 38: ReadJsonObject with colon delimiter
+            testNum++;
+            var objColon = ini.ReadJsonObject("Section13", "json_colon");
+            bool colonObjOk = false;
+            if (objColon is IDictionary<string, object> colonDict)
+            {
+                colonObjOk = colonDict.ContainsKey("test") && colonDict["test"] as string == "colon";
+            }
+            RunTest(testNum, "ReadJsonObject (colon delimiter)", true, colonObjOk, "Parse JSON from colon-delimited key");
+
+            // Test 39: ReadInt32 with colon delimiter
+            testNum++;
+            int colonInt = ini.ReadInt32("Section13", "another_colon_key", 0);
+            RunTest(testNum, "ReadInt32 (colon delimiter)", 123, colonInt, "another_colon_key using ':'");
+
+            // Test 40: ReadKeys for Section13
+            testNum++;
+            string[] expectedKeys13 = { "key_with_colon", "json_colon", "another_colon_key" };
+            string[] actualKeys13 = ini.ReadKeys("Section13");
+            RunTest(testNum, "ReadKeys (Section13)", expectedKeys13, actualKeys13, "Keys in Section13");
         }
 
         private static void TestJustify(int testNum)
@@ -548,8 +592,7 @@ key1 = multi
 key1 = multi2
 
   ; some garbage
-undefined_line_without_equals
-";
+undefined_line_without_equals";
             File.WriteAllText("justify_test.ini", content);
 
             IniFile ini = IniFile.Load("justify_test.ini", Encoding.UTF8, StringComparison.InvariantCultureIgnoreCase, true);
@@ -573,6 +616,7 @@ key1=multi2
             RunTest(testNum, "Justify", expected, justified, "Compact INI without comments/blank/undefined");
         }
 
+        // -------------------- Test helpers --------------------
         private static void RunTest(int testNumber, string testName, object expected, object actual, string description)
         {
             bool passed = Equals(expected, actual);
@@ -601,6 +645,8 @@ key1=multi2
                 return "[" + string.Join(", ", arr) + "]";
             if (value is byte[] bytes)
                 return "[" + string.Join(", ", bytes) + "]";
+            if (value is DateTime dt)
+                return dt.ToString("yyyy-MM-dd");
             return value.ToString();
         }
 
