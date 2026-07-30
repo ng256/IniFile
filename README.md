@@ -22,6 +22,7 @@ It provides a convenient API for reading, writing, and deleting values, as well 
 - **Static helper methods** – quick one‑liners for reading/writing a single value without creating an instance.
 - **Escape characters** – optional support for `\n`, `\t`, etc.
 - **Auto‑detection** of line endings and encoding.
+- **Flexible configuration** – centralised settings via `IniSettings` class (delimiters, comment characters, case sensitivity, etc.).
 
 ---
 
@@ -38,7 +39,7 @@ Simply add `IniFile.cs` to your project and start using it. No external dependen
 ```csharp
 using System.Ini;
 
-// Load from file.
+// Load from file using default settings.
 var ini = IniFile.Load("config.ini");
 
 // Or create a new empty instance.
@@ -51,42 +52,37 @@ ini = IniFile.LoadOrCreate("config.ini");
 ini.Save("config.ini");
 ```
 
-You can customize the parser behavior by specifying the text encoding and string comparison rules.
+You can customize the parser behavior by passing an `IniSettings` object. The settings control string comparison, escape character processing, multiline support, allowed delimiters, comment styles, and whether spaces are permitted in key names.
+
 ```csharp
 using System.Text;
 using System.Ini;
 
-// Load with a specific encoding.
-var ini = IniFile.Load("config.ini", Encoding.UTF8);
+// Create custom settings.
+var settings = new IniSettings
+{
+    Comparison = StringComparison.OrdinalIgnoreCase,
+    AllowEscapeChars = false,
+    AllowMultiLine = true,
+    Delimiters = IniDelimiterMode.Equals,      // only '='
+    Comments = IniCommentMode.Hash,            // only '#'
+    AllowSpacesInKey = true
+};
 
-// Create with custom string comparison rules.
-// StringComparison.OrdinalIgnoreCase makes key and section names case-insensitive.
-ini = IniFile.Create(StringComparison.OrdinalIgnoreCase);
+// Load with custom settings.
+var ini = IniFile.Load("config.ini", settings);
 
-// Load with both encoding and comparison settings.
-ini = IniFile.Load("config.ini", Encoding.UTF8, StringComparison.OrdinalIgnoreCase);
+// Or with encoding.
+ini = IniFile.Load("config.ini", Encoding.UTF8, settings);
 
-// ... 
+// Create an empty file with custom settings.
+ini = IniFile.Create(settings);
 
+// Save with encoding.
 ini.Save("config.ini", Encoding.UTF8);
 ```
 
-You can also enable optional features such as escape character processing and multiline values support. When allowEscChars is enabled, escape sequences such as \n, \t, and \\ are converted automatically. When allowMultiLine is enabled, values enclosed in { ... } can span multiple lines and preserve their internal formatting.
-```csharp
-using System.Ini;
-
-// Enable escape sequences and multiline values support.
-var ini = IniFile.Create(allowEscChars: true, allowMultiLine: true);
-
-// Load an INI file with these options enabled.
-ini = IniFile.Load("config.ini", allowEscChars: true, allowMultiLine: true);
-
-// Load with custom comparison and additional features enabled.
-ini = IniFile.Load("config.ini",
-    comparison: StringComparison.OrdinalIgnoreCase,
-    allowEscChars: true,
-    allowMultiLine: true);
-```
+For convenience, legacy overloads are still available but marked as obsolete. They internally use `IniSettings` with default values.
 
 ### Reading and Writing Simple Values
 
@@ -121,10 +117,10 @@ Path = /opt/data/
 Path = /mnt/backup/
 Path = /var/cache/myapp
 ```
+
 **Working with file:**
 
 ```csharp
-
 // Read values.
 string network = ini.ReadString("Host", "Network", "localhost");
 int port = ini.ReadInt32("Host", "Port", 8080);
@@ -262,15 +258,39 @@ foreach (var section in dict)
 }
 ```
 
-Overloads with `Encoding` parameter are also available.
+Overloads with `Encoding` and `IniSettings` parameters are also available.
 
 ---
 
-## Customization Options
+## Configuration with `IniSettings`
 
-- **String comparison** – pass `StringComparison` (default: `InvariantCultureIgnoreCase`) to the constructor or static methods.
-- **Escape characters** – enable `allowEscChars` to support `\n`, `\t`, etc.
-- **Encoding** – specify encoding when loading/saving; auto‑detection of BOM is supported.
+All parser behaviour is centralised in the `IniSettings` class. It allows you to fine‑tune how the INI file is interpreted.
+
+### Settings Overview
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `Comparison` | `StringComparison` | Case sensitivity and culture rules (default: `InvariantCultureIgnoreCase`). |
+| `AllowEscapeChars` | `bool` | If `true`, escape sequences like `\n` and `\t` are unescaped in values (default: `true`). |
+| `AllowMultiLine` | `bool` | If `true`, values wrapped in `{ ... }` can span multiple lines (default: `true`). |
+| `Delimiters` | `IniDelimiterMode` | Allowed delimiters: `Equals`, `Colon`, `Both` (default: `Both`). |
+| `Comments` | `IniCommentMode` | Allowed comment characters: `Hash`, `Semicolon`, `Both` (default: `Both`). |
+| `AllowSpacesInKey` | `bool` | If `true`, key names may contain spaces (default: `false`). |
+
+The `IniSettings.Default` property provides a preconfigured instance with the default settings, which you can use as a base for customisation.
+
+### Example
+
+```csharp
+var settings = new IniSettings
+{
+    Comparison = StringComparison.Ordinal,
+    Delimiters = IniDelimiterMode.Equals,
+    Comments = IniCommentMode.Hash,
+    AllowSpacesInKey = false
+};
+var ini = IniFile.Load("config.ini", settings);
+```
 
 ---
 
@@ -287,12 +307,12 @@ Overloads with `Encoding` parameter are also available.
 | **Indexer** | `this[string section, string key]` |
 | **Static** | `Load`, `LoadOrCreate`, `Save`, `ReadFromFile<T>`, `WriteToFile<T>`, `ExportToDictionaryFile` |
 
-All methods accept `section = null` for global entries.
+All methods accept `section = null` for global entries. All methods that previously accepted separate parameters (`comparison`, `allowEscChars`, etc.) are now obsolete; use the overloads that accept `IniSettings`.
 
 ---
 
 # Background
- 
+
 Parsing INI files is a fairly common task in programming when working with configurations. INI files are simple and easy to read by both humans and machines. There are several main ways to implement this:
 - Manual parsing using string manipulation functions. This approach allows for maximum flexibility in handling various INI file formats, but requires more effort to implement.
 - Using modules of various APIs. They provide ready-made functions for reading, writing, and processing data in the INI format. This is a simpler and faster way, but it is limited by the capabilities of the libraries themselves, and it also makes the project platform-dependent.
@@ -319,15 +339,15 @@ Here is an example of syntax highlighting using a popular text editor. As you ca
 
 ## Regular Expression
 
-After much research, I came up with the following regular expression that allows you to determine the meaning of each character in an ini file. In its entirety it looks like this:  
-```regex
+The parser uses a dynamic regular expression generated by `IniSettings.BuildRegexPattern()`. This pattern is tailored to the current settings (delimiters, comment characters, etc.). The default pattern (with both delimiters and both comment characters) is shown below:
+
+```
 (?=\S)(?<text>(?<comment>(?<open>[#;]+)(?:[^\S\r\n]*)(?<value>.+))
 |(?<section>(?<open>\[)(?:\s*)(?<value>[^\]]*\S+)(?:[^\S\r\n]*)(?<close>\]))
-|(?<entry>(?<key>[^=\r\n\ [\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)
-(?:\s*(?<value>\{(?:[^{}"]+|"(?:\\.|[^"])*"|(?<o>\{)|(?<-o>\}))*(?(o)(?!))\})|((?:[^\S\r\n]*)(?<value>[^#;\r\n]*))))
+|(?<entry>(?<key>[^=:\r\n\[\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:\s*(?<value>\{(?:(?>(?:""(?:\\.|[^""])*""|//[^\r\n]*|/\*[\s\S]*?\*/|[^{}""/]+|/(?![/*])))|(?<o>\{)|(?<-o>\}))*(?(o)(?!))\})|((?:[^\S\r\n]*)(?<value>[^#;\r\n]*))))
 |(?<undefined>.+))(?<=\S)
 |(?<linebreaker>\r\n|\n)
-|(?<whitespace>[^\S\r\n]+)
+|(?<whitespace>(?>[^\S\r\n]+))
 ```
 
 Before we move on to writing the code, I want to break down the parsing regular expression itself and explain what each piece is for.
@@ -340,33 +360,33 @@ Before we move on to writing the code, I want to break down the parsing regular 
     - **`(?<open>[#;]+)`** captures the beginning of a comment.
     - **`(?:[^\S\r\n]*)`** captures whitespace characters, not including newline characters.
     - **`(?<value>.+)`** - captures the entire comment text.
-    - 
+
 4. **`(?<section>(?<open>\[)(?:\s*)(?<value>[^\]]*\S+)(?:[^\S\r\n]*)(?<close>\]))`** Matches section headers such as \[Section\]. The opening bracket, section name, and closing bracket are captured individually, allowing the original spacing to remain unchanged after editing.
     - **`(?<open>\[)`** - captures the beginning of a section.
     - **`(?:\s*)`** - captures whitespace characters.
     - **`(?<value>[^\]]*\S+)`** - captures name of the section.
     - **`(?<close>\])`** captures the "]" character, which marks the end of a section.
 
-5. **`(?<entry>(?<key>[^=\r\n\ [\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:\s*(?<value>\{(?:[^{}""]+|""(?:\\.|[^""])*""|(?<o>\{)|(?<-o>\}))*(?(o)(?!))\})|((?:[^\S\r\n]*)(?<value>[^#;\r\n]*))))|`** Matches key-value entries. It extracts the key name, the delimiter (= or :), and either a regular single-line value or a multiline value enclosed in { ... }. Nested braces and quoted strings inside wrapped values are handled correctly, making the parser suitable for embedded JSON.
-    - **`(?<key>[^=\r\n\[\]]*\S)`** captures key of the entry.
+5. **`(?<entry>(?<key>[^=:\r\n\[\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:\s*(?<value>\{(?:(?>(?:""(?:\\.|[^""])*""|//[^\r\n]*|/\*[\s\S]*?\*/|[^{}""/]+|/(?![/*])))|(?<o>\{)|(?<-o>\}))*(?(o)(?!))\})|((?:[^\S\r\n]*)(?<value>[^#;\r\n]*))))|`** Matches key-value entries. It extracts the key name, the delimiter (= or :), and either a regular single-line value or a multiline value enclosed in { ... }. Nested braces and quoted strings inside wrapped values are handled correctly, making the parser suitable for embedded JSON.
+    - **`(?<key>[^=:\r\n\[\]]*\S)`** captures key of the entry.
     - **`(?<delimiter>:|=)`** captures the ":" or "=" character separating the key and value.
-    - **`(?<value>\{(?:[^{}""]+|""(?:\\.|[^""])*""|(?<o>\{)|(?<-o>\}))*(?(o)(?!))\})`** captures text enclosed in '{' and '}' with backtracking.
+    - **`(?<value>\{(?:(?>(?:""(?:\\.|[^""])*""|//[^\r\n]*|/\*[\s\S]*?\*/|[^{}""/]+|/(?![/*])))|(?<o>\{)|(?<-o>\}))*(?(o)(?!))\})`** captures text enclosed in '{' and '}' with backtracking, ignoring comments and strings inside.
     - **`(?<value>[^#;\r\n]*)`** captures regular INI value.
 6. **`(?<undefined>.+)`** captures any undefined parts of the text that did not match the previous groups.
 
-7. **`(?<=\S)`** is a positive lookahead condition that checks that the preceding character is not a whitespace character. This is necessary to skip trailing whitespace in the file.
+7. **`(?<=\S)`** is a positive lookbehind that ensures the preceding character is not a whitespace, skipping trailing whitespace.
 
-8. **`(?<linebreaker>\r\n|\n)`** captures newline characters ("\r\n" or "\n").
+8. **`(?<linebreaker>\r\n|\n)`** captures newline characters.
 
-9. **`(?<whitespace>[^\S\r\n]+)`** captures one or more whitespace characters, not including newline characters.
+9. **`(?<whitespace>(?>[^\S\r\n]+))`** captures one or more whitespace characters (spaces/tabs) not including newlines.
 
-  This is a very detailed and carefully designed regular expression designed to accurately parse the structure of an INI file and extract all the necessary components (sections, keys, values, comments, etc.) from it. It can handle various formatting variations of INI files and provides a robust and flexible way of parsing.
+This is a very detailed and carefully designed regular expression designed to accurately parse the structure of an INI file and extract all the necessary components (sections, keys, values, comments, etc.) from it. It can handle various formatting variations of INI files and provides a robust and flexible way of parsing.
 
 Take a look at the parsing of the above sample using this regular expression:
 
 ![image](https://github.com/user-attachments/assets/fa2929cf-93bd-43b9-b11a-2c0039c93fff)
 
-You can experiment with this regular expression using this [link](https://regex101.com/r/mul0C2).
+You can experiment with this regular expression using this [link](https://regex101.com/r/mul0C2). Note that the actual pattern used by the library may differ slightly if you change the settings.
 
 ## C# Implementation
 
