@@ -48,6 +48,17 @@ namespace IniFileTest
         private static int _testsFailed = 0;
         private static readonly List<string> _testResults = new List<string>();
 
+        // Shared settings used for all test loads (matches legacy behaviour)
+        private static readonly IniSettings _testSettings = new IniSettings
+        {
+            Comparison = StringComparison.InvariantCultureIgnoreCase,
+            AllowEscapeChars = true,
+            AllowMultiLine = true,
+            Delimiters = IniDelimiterMode.Both,
+            Comments = IniCommentMode.Both,
+            AllowSpacesInKey = false
+        };
+
         static void Main(string[] args)
         {
             Run(args);
@@ -63,8 +74,8 @@ namespace IniFileTest
             File.WriteAllText("test.ini", testIniContent);
             Console.WriteLine("Generated test.ini (evil.ini)\n");
 
-            // 2. Load with allowEscChars = true (to test escaping)
-            IniFile ini = IniFile.Load("test.ini", Encoding.UTF8, StringComparison.InvariantCultureIgnoreCase, true);
+            // 2. Load with test settings (allowEscChars = true, allowMultiLine = true)
+            IniFile ini = IniFile.Load("test.ini", Encoding.UTF8, _testSettings);
 
             // 3. Run tests
             RunAllTests(ini);
@@ -221,9 +232,8 @@ another_colon_key : 123
 
         private static string GenerateExpectedContent(string originalContent)
         {
-            // Load a copy of the original content
-            var ini = IniFile.Load(new StringReader(originalContent),
-                StringComparison.InvariantCultureIgnoreCase, true);
+            // Load a copy of the original content using the same test settings
+            var ini = IniFile.Load(new StringReader(originalContent), _testSettings);
 
             // Repeat the operations from the tests that modify the file:
             ini["", "global_key"] = "new_global";
@@ -325,7 +335,8 @@ another_colon_key : 123
             NetworkSettings net = new NetworkSettings { Host = "testhost", Port = 1234, Timeout = 60.0, Enabled = false };
             LoggingSettings log = new LoggingSettings { Level = "Debug", FilePath = "debug.log" };
 
-            IniFile settingsIni = IniFile.Create(StringComparison.InvariantCultureIgnoreCase, true);
+            // Create a separate INI file for serialization tests (uses default settings)
+            IniFile settingsIni = IniFile.Create();
             settingsIni.WriteSettings(net);
             settingsIni.WriteSettings(log);
 
@@ -595,7 +606,8 @@ key1 = multi2
 undefined_line_without_equals";
             File.WriteAllText("justify_test.ini", content);
 
-            IniFile ini = IniFile.Load("justify_test.ini", Encoding.UTF8, StringComparison.InvariantCultureIgnoreCase, true);
+            // Use the same test settings for consistency
+            IniFile ini = IniFile.Load("justify_test.ini", Encoding.UTF8, _testSettings);
             string justified = ini.Justify();
 
             string expected = @"global_key1=value1
