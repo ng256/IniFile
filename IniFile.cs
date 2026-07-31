@@ -124,8 +124,7 @@ namespace System.Ini
 
         // Common regex fragments (to avoid duplication and ensure consistency)
         private const string WhitespaceBefore = @"[^\S\r\n]*";
-        private const string LineBreakerPatternConst = @"(?<linebreaker>\r\n|\n)";
-        private const string WhitespaceTokenPatternConst = @"(?<whitespace>(?>[^\S\r\n]+))";
+
 
         /// <summary>
         /// Initializes a new instance with default settings.
@@ -241,7 +240,7 @@ namespace System.Ini
         // fails some parsing scenarios.
         //
         // Keep for further development until it fully replaces the temporary version.
-        /*internal string BuildIniPattern()
+        internal string BuildIniPatternEx()
         {
             // 1. Text token: must start with a non‑whitespace character and end with one.
             string textPattern = $@"(?=\S)(?<text>{BuildTextPattern()})(?<=\S)";
@@ -249,7 +248,7 @@ namespace System.Ini
             // 2. Line breaker: captures CRLF or LF.
             // 3. Whitespace: captures any sequence of spaces/tabs (non‑line‑break whitespace).
             return $"{textPattern}|{BuildLineBreakerPattern()}|{BuildWhitespacePattern()}";
-        }*/
+        }
 
         // Text pattern – combines comment, section, entry, and undefined.
         private string BuildTextPattern()
@@ -262,16 +261,18 @@ namespace System.Ini
         {
             string commentChars = GetCommentCharacters();
 
+            // "(?<comment>(?<open>[#;]+)(?:[^\S\r\n]*)(?<value>.*))|"
+
             // The full comment is captured in group 'comment'.
             // Must match at least one character after the comment marker (use .+ not .*)
             return $@"(?<comment>" +
                         // 1. Opening comment characters (e.g., # or ;) – captured as 'open'.
-                        $@"(?<open>[{Regex.Escape(commentChars)}]+)" +
+                        $@"(?<open>[{commentChars}]+)" +
                         // 2. Optional whitespace (spaces/tabs) between the comment marker and the text.
-                        WhitespaceBefore +
+                        @"(?:[^\S\r\n]*)" +
                         // 3. The comment text – everything up to the end of the line (captured as 'value').
-                        @"(?<value>.+)" +
-                    $@")";
+                        @"(?<value>.*)" +
+                    @")";
         }
 
         // Section pattern.
@@ -286,7 +287,7 @@ namespace System.Ini
                         // 3. Section name: any char except ']' and newline, ending with at least one non-whitespace.
                         @"(?<value>[^\]]*\S+)" +
                         // 4. Optional whitespace before closing bracket.
-                        WhitespaceBefore +
+                        @"[^\S\r\n]*" +
                         // 5. Closing bracket ']'.
                         @"(?<close>\]))" +
                     $@")";
@@ -412,13 +413,13 @@ namespace System.Ini
         // Line breaker pattern.
         private string BuildLineBreakerPattern()
         {
-            return LineBreakerPatternConst;
+            return @"(?<linebreaker>\r\n|\n)";
         }
 
         // Whitespace pattern (non‑line‑break spaces and tabs).
         private string BuildWhitespacePattern()
         {
-            return WhitespaceTokenPatternConst;
+            return @"(?<whitespace>(?>[^\S\r\n]+))";
         }
 
         // Helper: get comment characters based on CommentMode.
@@ -708,23 +709,33 @@ namespace System.Ini
 
         private IniFile(string content, IniSettings settings)
         {
-            // Store settings that are used throughout the class
-            _comparison = settings.Comparison;
+
+            if(content == null)
+                throw new ArgumentNullException(nameof(content));
+
+            if (settings == null)
+                throw new ArgumentNullException(nameof(settings));
+
+            // Store settings that are used throughout the class.
+            var comparison = settings.Comparison;
+            if ((uint)comparison > (uint)StringComparison.OrdinalIgnoreCase)
+                throw new ArgumentOutOfRangeException(nameof(settings.Comparison));
+            var comparer = GetComparer(comparison);
+            var iniPattern = settings.BuildIniPattern();
+            var regexOptions = GetRegexOptions(comparison, RegexOptions.Compiled | RegexOptions.ExplicitCapture);
+
+            _comparison = comparison;
             _allowEscapeChars = settings.AllowEscapeChars;
             _allowMultiLine = settings.AllowMultiLine;
             _defaultDelimiter = GetDelimiter(settings.Delimiters);
-
-            // Initialize culture, line breaker, and other helpers.
-            _culture = GetCultureInfo(_comparison);
-            _lineBreaker = AutoDetectLineBreaker(content ?? string.Empty);
+            _culture = GetCultureInfo(comparison);
+            _lineBreaker = AutoDetectLineBreaker(content);
             _matches = new List<Match>(DefaultCapacity);
-            var comparer = GetComparer(_comparison);
-            var regexOptions = GetRegexOptions(_comparison, RegexOptions.Compiled | RegexOptions.ExplicitCapture);
             _trueValues = new HashSet<string>(comparer) { "true", "yes", "on", "enable", "1" };
             _falseValues = new HashSet<string>(comparer) { "false", "no", "off", "disable", "0" };
 
-            string pattern = settings.BuildIniPattern();
-            _iniRegex = new Regex(pattern, regexOptions);
+            // Initialize parsing engine.
+            _iniRegex = new Regex(iniPattern, regexOptions);
             _jsonRegex = new Regex(
                                     @"(?<Comment>//.*|/\*[\s\S]*?\*/)|" +
                                     @"(?<key>""[^""\\]*(?:\\.[^""\\]*)*"")(?=(?:\s|//.*|/\*.*?\*/)*:)|" +
@@ -741,173 +752,43 @@ namespace System.Ini
             _groupValue = _iniRegex.GroupNumberFromName("value");
 
             // Start parsing the content.
-            Content = content ?? string.Empty;
+            Content = content;
         }
 
         // Constructor accepting ini content as a string and settings.
         // Initializes the parser settings, setting the comparison rules,
         // regular expression pattern, escape character allowance, and delimiter
         // based on the provided settings.
-        [Obsolete]
+        [Obsolete("This method is obsolete. Use the overload with IniSettings parameter instead. This method will be removed in a future version.")]
         private IniFile(string content,
             StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
-            bool allowEscChars = false, bool allowMultiLine = false)
+            bool allowEscChars = true, bool allowMultiLine = true) 
+            : this(content, new IniSettings()
+            {
+                Comparison = comparison, 
+                AllowEscapeChars = allowEscChars, 
+                AllowMultiLine = allowMultiLine
+            })
         {
-            if ((uint)comparison > (uint)StringComparison.OrdinalIgnoreCase)
-                throw new ArgumentOutOfRangeException(nameof(comparison));
-
-            if (content == null) content = string.Empty;
-            _comparison = comparison;
-            _culture = GetCultureInfo(_comparison);
-            _allowEscapeChars = allowEscChars;
-            _allowMultiLine = allowMultiLine;
-            _lineBreaker = AutoDetectLineBreaker(content);
-            _matches = new List<Match>(DefaultCapacity);
-            StringComparer comparer = GetComparer(comparison);
-            RegexOptions regexOptions = GetRegexOptions(comparison, RegexOptions.Compiled | RegexOptions.ExplicitCapture);
-            _trueValues = new HashSet<string>(comparer) { "true", "yes", "on", "enable", "1" };
-            _falseValues = new HashSet<string>(comparer) { "false", "no", "off", "disable", "0" };
-            _iniRegex = new Regex(@"(?=\S)(?<text>(?<comment>(?<open>[#;]+)(?:[^\S\r\n]*)(?<value>.*))|" +
-                                    @"(?<section>(?<open>\[)(?:\s*)(?<value>[^\]\r\n]*?\S)(?:[^\S\r\n]*)(?<close>\]))|" +
-                                    (allowMultiLine
-                                    ? @"(?<entry>(?<key>[^=:\r\n\[\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:\s*(?<value>\{(?:(?>(?:""(?:\\.|[^""])*""|//[^\r\n]*|/\*[\s\S]*?\*/|[^{}""/]+|/(?![/*])))|(?<o>\{)|(?<-o>\}))*(?(o)(?!))\})|((?:[^\S\r\n]*)(?<value>[^#;\r\n]*))))|"
-                                    : @"(?<entry>(?<key>[^=:\r\n\ [\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:[^\S\r\n]*)(?<value>[^#;\r\n]*))|") +
-                                    @"(?<undefined>.+))(?<=\S)|" +
-                                    @"(?<linebreaker>\r\n|\n)|" +
-                                    @"(?<whitespace>[^\S\r\n]+)",
-                                    regexOptions);
-            _jsonRegex = new Regex(
-                                    @"(?<Comment>//.*|/\*[\s\S]*?\*/)|" +
-                                    @"(?<key>""[^""\\]*(?:\\.[^""\\]*)*"")(?=(?:\s|//.*|/\*.*?\*/)*:)|" +
-                                    @"(?<value>(?<bool>true)|(?<bool>false)|(?<null>null)|""(?<string>[^""\\]*(?:\\.[^""\\]*)*)""|(?<number>-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?))|" +
-                                    @"(?<value_sep>:)|(?<array_open>\[)|(?<array_sep>,)|(?<array_close>\])|" +
-                                    @"(?<object_open>{)|(?<object_close>})|" +
-                                    @"(?<whitespace>[^\S\r\n]+)|(?<newline>[\r\n]+)|(?<undefined>.+)",
-                                    regexOptions);
-            
-            // Cache group numbers
-            _groupSection = _iniRegex.GroupNumberFromName("section");
-            _groupEntry = _iniRegex.GroupNumberFromName("entry");
-            _groupKey = _iniRegex.GroupNumberFromName("key");
-            _groupValue = _iniRegex.GroupNumberFromName("value");
-            Content = content ?? string.Empty;
         }
 
         #endregion
 
-        #region Factory methods (obsolete)
+        #region Factory methods
 
         /// <summary>
-        /// Create a new instance of <see cref="IniFile"/> with empty content.
+        /// Creates a new empty <see cref="IniFile"/> with the specified settings.
+        /// If <paramref name="settings"/> is null, default settings are used.
         /// </summary>
-        [Obsolete("This method is obsolete. Use the overload with IniSettings parameter instead. This method will be removed in a future version.")]
-        public static IniFile Create(StringComparison comparison,
-            bool allowEscChars, bool allowMultiLine)
+        /// <param name="content">The string containing data of the INI file.</param>
+        /// <param name="settings">The parsing settings, or null for defaults.</param>
+        /// <returns>A new <see cref="IniFile"/> instance.</returns>
+        public static IniFile Create(string content, IniSettings settings = null)
         {
-            return new IniFile(string.Empty, comparison, allowEscChars, allowMultiLine);
+            if (content == null)
+                throw new ArgumentNullException(nameof(content));
+            return new IniFile(string.Empty, settings ?? IniSettings.Default);
         }
-
-        /// <summary>
-        /// Loads an INI file from a <see cref="TextReader"/> and initializes a new <see cref="IniFile"/> instance.
-        /// </summary>
-        [Obsolete("This method is obsolete. Use the overload with IniSettings parameter instead. This method will be removed in a future version.")]
-        public static IniFile Load(TextReader reader,
-            StringComparison comparison,
-            bool allowEscChars, bool allowMultiLine)
-        {
-            return new IniFile(reader.ReadToEnd(), comparison, allowEscChars, allowMultiLine);
-        }
-
-        /// <summary>
-        /// Loads an INI file from a <see cref="Stream"/> and initializes a new <see cref="IniFile"/> instance.
-        /// </summary>
-        [Obsolete("This method is obsolete. Use the overload with IniSettings parameter instead. This method will be removed in a future version.")]
-        public static IniFile Load(Stream stream, Encoding encoding,
-            StringComparison comparison,
-            bool allowEscChars, bool allowMultiLine)
-        {
-            using (StreamReader reader = new StreamReader(stream ?? throw new ArgumentNullException(nameof(stream)), encoding ?? Encoding.UTF8))
-                return new IniFile(reader.ReadToEnd(), comparison, allowEscChars, allowMultiLine);
-        }
-
-        /// <summary>
-        /// Loads an INI file and initializes a new <see cref="IniFile"/> instance.
-        /// </summary>
-        [Obsolete("This method is obsolete. Use the overload with IniSettings parameter instead. This method will be removed in a future version.")]
-        public static IniFile Load(string fileName,
-            Encoding encoding,
-            StringComparison comparison,
-            bool allowEscChars, bool allowMultiLine)
-        {
-            string filePath = GetFullPath(fileName, true);
-            return new IniFile(File.ReadAllText(filePath, encoding ?? AutoDetectEncoding(filePath, Encoding.UTF8)),
-                comparison, allowEscChars, allowMultiLine);
-        }
-
-        /// <summary>
-        /// Loads an INI file and initializes a new <see cref="IniFile"/> instance.
-        /// </summary>
-        [Obsolete("This method is obsolete. Use the overload with IniSettings parameter instead. This method will be removed in a future version.")]
-        public static IniFile Load(string fileName,
-            StringComparison comparison,
-            bool allowEscChars, bool allowMultiLine)
-        {
-            if (fileName == null)
-                throw new ArgumentNullException(nameof(fileName));
-
-            string filePath = GetFullPath(fileName, true);
-            Encoding encoding = AutoDetectEncoding(filePath, Encoding.UTF8);
-
-            return new IniFile(File.ReadAllText(filePath, encoding),
-                comparison, allowEscChars, allowMultiLine);
-        }
-
-        /// <summary>
-        /// Loads an INI file if it exists; otherwise, creates an empty <see cref="IniFile"/>.
-        /// </summary>
-        [Obsolete("This method is obsolete. Use the overload with IniSettings parameter instead. This method will be removed in a future version.")]
-        public static IniFile LoadOrCreate(string fileName, Encoding encoding,
-            StringComparison comparison,
-            bool allowEscChars, bool allowMultiLine)
-        {
-            if (fileName == null)
-                throw new ArgumentNullException(nameof(fileName));
-
-            string filePath = GetFullPath(fileName);
-            if (encoding == null)
-                encoding = AutoDetectEncoding(filePath, Encoding.UTF8);
-
-            return new IniFile(
-                File.Exists(filePath)
-                    ? File.ReadAllText(filePath, encoding)
-                    : string.Empty,
-                comparison, allowEscChars, allowMultiLine);
-        }
-
-        /// <summary>
-        /// Loads an INI file if it exists; otherwise, creates an empty <see cref="IniFile"/>.
-        /// </summary>
-        [Obsolete("This method is obsolete. Use the overload with IniSettings parameter instead. This method will be removed in a future version.")]
-        public static IniFile LoadOrCreate(string fileName,
-            StringComparison comparison,
-            bool allowEscChars, bool allowMultiLine)
-        {
-            if (fileName == null)
-                throw new ArgumentNullException(nameof(fileName));
-
-            string filePath = GetFullPath(fileName);
-            Encoding encoding = AutoDetectEncoding(filePath, Encoding.UTF8);
-
-            return new IniFile(
-                File.Exists(filePath)
-                    ? File.ReadAllText(filePath, encoding)
-                    : string.Empty,
-                comparison, allowEscChars, allowMultiLine);
-        }
-
-        #endregion
-
-        #region Factory methods with IniSettings (recommended)
 
         /// <summary>
         /// Creates a new empty <see cref="IniFile"/> with the specified settings.
@@ -1022,6 +903,114 @@ namespace System.Ini
             Encoding encoding = AutoDetectEncoding(fullPath, Encoding.UTF8);
             string content = File.Exists(fullPath) ? File.ReadAllText(fullPath, encoding) : string.Empty;
             return new IniFile(content, settings ?? IniSettings.Default);
+        }
+
+        /// <summary>
+        /// Create a new instance of <see cref="IniFile"/> with empty content.
+        /// </summary>
+        [Obsolete("This method is obsolete. Use the overload with IniSettings parameter instead. This method will be removed in a future version.")]
+        public static IniFile Create(StringComparison comparison,
+            bool allowEscChars, bool allowMultiLine)
+        {
+            return new IniFile(string.Empty, comparison, allowEscChars, allowMultiLine);
+        }
+
+        /// <summary>
+        /// Loads an INI file from a <see cref="TextReader"/> and initializes a new <see cref="IniFile"/> instance.
+        /// </summary>
+        [Obsolete("This method is obsolete. Use the overload with IniSettings parameter instead. This method will be removed in a future version.")]
+        public static IniFile Load(TextReader reader,
+            StringComparison comparison,
+            bool allowEscChars, bool allowMultiLine)
+        {
+            return new IniFile(reader.ReadToEnd(), comparison, allowEscChars, allowMultiLine);
+        }
+
+        /// <summary>
+        /// Loads an INI file from a <see cref="Stream"/> and initializes a new <see cref="IniFile"/> instance.
+        /// </summary>
+        [Obsolete("This method is obsolete. Use the overload with IniSettings parameter instead. This method will be removed in a future version.")]
+        public static IniFile Load(Stream stream, Encoding encoding,
+            StringComparison comparison,
+            bool allowEscChars, bool allowMultiLine)
+        {
+            using (StreamReader reader = new StreamReader(stream ?? throw new ArgumentNullException(nameof(stream)), encoding ?? Encoding.UTF8))
+                return new IniFile(reader.ReadToEnd(), comparison, allowEscChars, allowMultiLine);
+        }
+
+        /// <summary>
+        /// Loads an INI file and initializes a new <see cref="IniFile"/> instance.
+        /// </summary>
+        [Obsolete("This method is obsolete. Use the overload with IniSettings parameter instead. This method will be removed in a future version.")]
+        public static IniFile Load(string fileName,
+            Encoding encoding,
+            StringComparison comparison,
+            bool allowEscChars, bool allowMultiLine)
+        {
+            string filePath = GetFullPath(fileName, true);
+            return new IniFile(File.ReadAllText(filePath, encoding ?? AutoDetectEncoding(filePath, Encoding.UTF8)),
+                comparison, allowEscChars, allowMultiLine);
+        }
+
+        /// <summary>
+        /// Loads an INI file and initializes a new <see cref="IniFile"/> instance.
+        /// </summary>
+        [Obsolete("This method is obsolete. Use the overload with IniSettings parameter instead. This method will be removed in a future version.")]
+        public static IniFile Load(string fileName,
+            StringComparison comparison,
+            bool allowEscChars, bool allowMultiLine)
+        {
+            if (fileName == null)
+                throw new ArgumentNullException(nameof(fileName));
+
+            string filePath = GetFullPath(fileName, true);
+            Encoding encoding = AutoDetectEncoding(filePath, Encoding.UTF8);
+
+            return new IniFile(File.ReadAllText(filePath, encoding),
+                comparison, allowEscChars, allowMultiLine);
+        }
+
+        /// <summary>
+        /// Loads an INI file if it exists; otherwise, creates an empty <see cref="IniFile"/>.
+        /// </summary>
+        [Obsolete("This method is obsolete. Use the overload with IniSettings parameter instead. This method will be removed in a future version.")]
+        public static IniFile LoadOrCreate(string fileName, Encoding encoding,
+            StringComparison comparison,
+            bool allowEscChars, bool allowMultiLine)
+        {
+            if (fileName == null)
+                throw new ArgumentNullException(nameof(fileName));
+
+            string filePath = GetFullPath(fileName);
+            if (encoding == null)
+                encoding = AutoDetectEncoding(filePath, Encoding.UTF8);
+
+            return new IniFile(
+                File.Exists(filePath)
+                    ? File.ReadAllText(filePath, encoding)
+                    : string.Empty,
+                comparison, allowEscChars, allowMultiLine);
+        }
+
+        /// <summary>
+        /// Loads an INI file if it exists; otherwise, creates an empty <see cref="IniFile"/>.
+        /// </summary>
+        [Obsolete("This method is obsolete. Use the overload with IniSettings parameter instead. This method will be removed in a future version.")]
+        public static IniFile LoadOrCreate(string fileName,
+            StringComparison comparison,
+            bool allowEscChars, bool allowMultiLine)
+        {
+            if (fileName == null)
+                throw new ArgumentNullException(nameof(fileName));
+
+            string filePath = GetFullPath(fileName);
+            Encoding encoding = AutoDetectEncoding(filePath, Encoding.UTF8);
+
+            return new IniFile(
+                File.Exists(filePath)
+                    ? File.ReadAllText(filePath, encoding)
+                    : string.Empty,
+                comparison, allowEscChars, allowMultiLine);
         }
 
         #endregion
@@ -1374,7 +1363,7 @@ namespace System.Ini
         #region Internal data modification methods
 
         // Sets a single value for a specified key in a given section.
-        private void SetValue(string section, string key, string value, bool wrap = true, bool escape = true)
+        private void SetValue(string section, string key, string value = null, bool wrap = true, bool escape = true)
         {
             bool emptySection = string.IsNullOrEmpty(section);
             bool expectedValue = !string.IsNullOrEmpty(value); // Indicates that a value should be inserted or updated.
@@ -1468,11 +1457,6 @@ namespace System.Ini
         }
 
         // Sets multiple values for a specific key in a section.
-        /*TODO:
-          Fix the bug in the SetValues method or create a separate logic for RemoveKeys 
-          that will carefully remove all occurrences of a key without affecting the surrounding text (comments, empty lines). 
-          Once this bug is fixed, the test will be completely green.
-        */
         private void SetValues(string section, string key, bool wrap = true, params string[] values)
         {
             if (values == null) values = new string[0];
@@ -4440,7 +4424,7 @@ namespace System.Ini
             if (key == null)
                 throw new ArgumentNullException(nameof(key));
 
-            SetValue(section, key, null);
+            SetValue(section, key);
         }
 
         /// <summary>
