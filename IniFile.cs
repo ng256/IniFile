@@ -98,9 +98,9 @@ namespace System.Ini
     {
         /// <summary>
         /// Unrecognised text is captured as 'undefined'.
-        /// This is the default behaviour – the text is treated as an error or ignored.
+        /// This is the default behaviour - the text is treated as an error or ignored.
         /// </summary>
-        Undefined,
+        Ignore,
 
         /// <summary>
         /// Unrecognised text is treated as a key without a value (a flag).
@@ -130,31 +130,31 @@ namespace System.Ini
         /// <summary>
         /// String comparison rules (case sensitivity, culture).
         /// </summary>
-        [IniEntry("comparison")]
+        [IniEntry("#comparison")]
         public StringComparison Comparison { get; set; } = StringComparison.InvariantCultureIgnoreCase;
 
         /// <summary>
         /// Whether escape sequences (e.g., \n, \t) are processed in values.
         /// </summary>
-        [IniEntry("escape_chars")]
+        [IniEntry("#escape_chars")]
         public bool AllowEscapeChars { get; set; } = true;
 
         /// <summary>
         /// Whether multiline values wrapped in { } are supported.
         /// </summary>
-        [IniEntry("muli_line")]
+        [IniEntry("#muli_line")]
         public bool AllowMultiLine { get; set; } = true;
 
         /// <summary>
         /// Whether spaces are allowed within key names.
         /// </summary>
-        [IniEntry("space_in_key")]
+        [IniEntry("#space_in_key")]
         public bool AllowSpacesInKey { get; set; } = false;
 
         /// <summary>
         /// Whether comments are allowed after values on the same line.
         /// </summary>
-        [IniEntry("inline_comment")]
+        [IniEntry("#inline_comment")]
         public bool AllowInlineComments { get; set; } = true;
 
         /// <summary>
@@ -164,26 +164,26 @@ namespace System.Ini
         /// (later values override earlier ones). This setting does not affect
         /// <see cref="IniFile.ReadStrings"/>, which always returns all values.
         /// </summary>
-        [IniEntry("dup_key_overrides")]
+        [IniEntry("#dup_key_override")]
         public bool DuplicateKeyOverride { get; set; } = false;
 
         /// <summary>
         /// Delimiter characters allowed between key and value.
         /// </summary>
-        [IniEntry("delimiter")]
+        [IniEntry("#delimiter")]
         public IniDelimiterMode Delimiters { get; set; } = IniDelimiterMode.Both;
 
         /// <summary>
         /// Comment-start characters recognised in the file.
         /// </summary>
-        [IniEntry("comment")]
+        [IniEntry("#comment")]
         public IniCommentMode Comments { get; set; } = IniCommentMode.Both;
 
         /// <summary>
         /// Controls how text that does not match comment, section or entry is captured.
         /// </summary>
-        [IniEntry("undef_text")]
-        public IniUndefinedTextMode UndefinedTextMode { get; set; } = IniUndefinedTextMode.Undefined;
+        [IniEntry("#undef_text")]
+        public IniUndefinedTextMode UndefinedText { get; set; } = IniUndefinedTextMode.Ignore;
 
         /// <summary>
         /// Initializes a new instance with default settings.
@@ -202,45 +202,53 @@ namespace System.Ini
         /// <param name="allowInlineComments">Whether comments are allowed after values on the same line.</param>
         /// <param name="delimiters">Allowed delimiter characters.</param>
         /// <param name="comments">Allowed comment-start characters.</param>
-        public IniSettings(StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
+        /// <param name="undefinedTextMode">How unrecognised text is captured.</param>
+        /// <param name="duplicateKeyOverride">
+        /// When <c>true</c>, later duplicate key values override earlier ones;
+        /// when <c>false</c>, the first occurrence is returned.
+        /// </param>
+        public IniSettings(
+            StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
             bool allowEscapeChars = true,
             bool allowMultiLine = true,
             bool allowSpacesInKey = false,
             bool allowInlineComments = true,
+            bool duplicateKeyOverride = false,
             IniDelimiterMode delimiters = IniDelimiterMode.Both,
-            IniCommentMode comments = IniCommentMode.Both
+            IniCommentMode comments = IniCommentMode.Both,
+            IniUndefinedTextMode undefinedTextMode = IniUndefinedTextMode.Ignore
             )
         {
             AllowInlineComments = allowInlineComments;
             Comparison = comparison;
             AllowEscapeChars = allowEscapeChars;
             AllowMultiLine = allowMultiLine;
+            DuplicateKeyOverride = duplicateKeyOverride;
             Delimiters = delimiters;
             Comments = comments;
             AllowSpacesInKey = allowSpacesInKey;
+            UndefinedText = undefinedTextMode;
         }
 
-        /// <summary>
-        /// Reads the INI settings from the specified file and returns a new <see cref="IniSettings"/> instance
-        /// populated with the values from the file.
-        /// </summary>
-        /// <param name="fileName">Path to the INI file.</param>
-        /// <param name="encoding">The encoding to use when reading the file. If <c>null</c>, auto-detection is attempted.</param>
-        /// <returns>A new <see cref="IniSettings"/> instance with values read from the file, or default values if the file does not exist.</returns>
-        /// <exception cref="ArgumentNullException">Thrown when <paramref name="fileName"/> is <c>null</c>.</exception>
-        public static IniSettings ReadFromFile(string fileName, Encoding encoding = null)
+        // Reads the INI settings from the specified string content and returns a new instance
+        // populated with the values from the content.
+        internal static IniSettings Parse(string content)
         {
-            if (fileName == null)
-                throw new ArgumentNullException(nameof(fileName));
+            if (content == null)
+                throw new ArgumentNullException(nameof(content));
 
-
-            // Load or create an empty INI file (if the file doesn't exist, an empty instance is returned).
-            var tmpSettings = new IniSettings() { UndefinedTextMode = IniUndefinedTextMode.Key };
-            var ini = IniFile.LoadOrCreate(fileName, encoding, tmpSettings);
             var settings = new IniSettings();
+            if (content != string.Empty)
+            {
+                var tmpSettings = new IniSettings
+                {
+                    Comments = IniCommentMode.Semicolon,
+                    UndefinedText = IniUndefinedTextMode.Key
+                };
+                var ini = IniFile.Create(content, tmpSettings);
+                ini.ReadSettings(settings);
 
-            // Populate settings using the IniSection and IniEntry attributes defined on the properties.
-            ini.ReadSettings(settings);
+            }
 
             return settings;
         }
@@ -265,7 +273,7 @@ namespace System.Ini
         // Configurable regex builder for INI pattern.
         internal string BuildIniPatternEx()
         {
-            // 1. Text token – must start and end with a non‑whitespace character.
+            // 1. Text token - must start and end with a non‑whitespace character.
             string textPattern = $@"(?=\S)(?<text>{BuildTextPattern()})(?<=\S)";
 
             // 2. Line breaker: captures CRLF or LF.
@@ -275,7 +283,7 @@ namespace System.Ini
 
         // ---- Grammar fragments ----
 
-        // Text pattern – combines comment, section, entry, and undefined.
+        // Text pattern - combines comment, section, entry, and undefined.
         private string BuildTextPattern()
         {
             return $"{BuildCommentPattern()}|{BuildSectionPattern()}|{BuildEntryPattern()}|{BuildUndefinedPattern()}";
@@ -403,14 +411,14 @@ namespace System.Ini
                    @"\}";
         }
 
-        // Undefined pattern – handles all text that doesn't match comment, section or entry.
+        // Undefined pattern - handles all text that doesn't match comment, section or entry.
         // The behaviour depends on UndefinedTextMode:
         //   - Undefined → captures the text in a plain 'undefined' group.
         //   - Key       → creates a complete 'entry' with a 'key' group and an empty 'value'.
         //   - Value     → creates a complete 'entry' with an empty 'key' and a 'value' group.
         private string BuildUndefinedPattern()
         {
-            switch (UndefinedTextMode)
+            switch (UndefinedText)
             {
                 // Treat as an entry with a key only.
                 case IniUndefinedTextMode.Key:
@@ -483,14 +491,14 @@ namespace System.Ini
         internal string BuildJsonPattern()
         {
             return
-                // 1. Comment token – single‑line // ... or multi‑line /* ... */
+                // 1. Comment token - single‑line // ... or multi‑line /* ... */
                 @"(?<Comment>//.*|/\*[\s\S]*?\*/)|" +
 
-                // 2. Key token – a double‑quoted string immediately followed (after optional
+                // 2. Key token - a double‑quoted string immediately followed (after optional
                 //    whitespace/comments) by a colon. The colon is not consumed.
                 @"(?<key>""[^""\\]*(?:\\.[^""\\]*)*"")(?=(?:\s|//.*|/\*.*?\*/)*:)|" +
 
-                // 3. Value token – boolean, null, string, or number
+                // 3. Value token - boolean, null, string, or number
                 @"(?<value>" +
                     @"(?<bool>true)|(?<bool>false)" + // Boolean.
                     @"(?<null>null)|" +               // Null.
@@ -514,13 +522,13 @@ namespace System.Ini
                 @"(?<object_open>{)|" +         // Object opening brace
                 @"(?<object_close>})|" +        // Object closing brace
 
-                // 6. Whitespace – any sequence of spaces or tabs (no line breaks).
+                // 6. Whitespace - any sequence of spaces or tabs (no line breaks).
                 @"(?<whitespace>[^\S\r\n]+)|" +
 
-                // 7. Newline – CRLF or LF.
+                // 7. Newline - CRLF or LF.
                 @"(?<newline>[\r\n]+)|" +
 
-                // 8. Undefined – catch‑all for any other non‑whitespace content.
+                // 8. Undefined - catch‑all for any other non‑whitespace content.
                 @"(?<undefined>.+)";
         }
     }
@@ -850,7 +858,8 @@ namespace System.Ini
         {
             if (content == null)
                 throw new ArgumentNullException(nameof(content));
-            return new IniFile(string.Empty, settings ?? IniSettings.Default);
+
+            return new IniFile(content, settings ?? IniSettings.Parse(content));
         }
 
         /// <summary>
@@ -876,7 +885,10 @@ namespace System.Ini
         {
             if (reader == null)
                 throw new ArgumentNullException(nameof(reader));
-            return new IniFile(reader.ReadToEnd(), settings ?? IniSettings.Default);
+
+            string content = reader.ReadToEnd();
+
+            return new IniFile(content, settings ?? IniSettings.Parse(content));
         }
 
         /// <summary>
@@ -892,8 +904,12 @@ namespace System.Ini
         {
             if (stream == null)
                 throw new ArgumentNullException(nameof(stream));
+
             using (var reader = new StreamReader(stream, encoding ?? Encoding.UTF8))
-                return new IniFile(reader.ReadToEnd(), settings ?? IniSettings.Default);
+            {
+                string content = reader.ReadToEnd();
+                return new IniFile(content, settings ?? IniSettings.Parse(content));
+            }
         }
 
         /// <summary>
@@ -909,9 +925,11 @@ namespace System.Ini
         {
             if (fileName == null)
                 throw new ArgumentNullException(nameof(fileName));
+
             string fullPath = GetFullPath(fileName, true);
-            Encoding enc = encoding ?? AutoDetectEncoding(fullPath, Encoding.UTF8);
-            return new IniFile(File.ReadAllText(fullPath, enc), settings ?? IniSettings.Default);
+            string content = File.ReadAllText(fullPath, encoding ?? AutoDetectEncoding(fullPath, Encoding.UTF8));
+
+            return new IniFile(content, settings ?? IniSettings.Parse(content));
         }
 
         /// <summary>
@@ -926,9 +944,11 @@ namespace System.Ini
         {
             if (fileName == null)
                 throw new ArgumentNullException(nameof(fileName));
+
             string fullPath = GetFullPath(fileName, true);
-            Encoding encoding = AutoDetectEncoding(fullPath, Encoding.UTF8);
-            return new IniFile(File.ReadAllText(fullPath, encoding), settings ?? IniSettings.Default);
+            string content = File.ReadAllText(fullPath, AutoDetectEncoding(fullPath, Encoding.UTF8));
+
+            return new IniFile(content, settings ?? IniSettings.Parse(content));
         }
 
         /// <summary>
@@ -944,10 +964,13 @@ namespace System.Ini
         {
             if (fileName == null)
                 throw new ArgumentNullException(nameof(fileName));
+
             string fullPath = GetFullPath(fileName);
-            Encoding enc = encoding ?? AutoDetectEncoding(fullPath, Encoding.UTF8);
-            string content = File.Exists(fullPath) ? File.ReadAllText(fullPath, enc) : string.Empty;
-            return new IniFile(content, settings ?? IniSettings.Default);
+            string content = File.Exists(fullPath) 
+                ? File.ReadAllText(fullPath, encoding ?? AutoDetectEncoding(fullPath, Encoding.UTF8)) 
+                : string.Empty;
+
+            return new IniFile(content, settings ?? IniSettings.Parse(content));
         }
 
         /// <summary>
@@ -962,10 +985,13 @@ namespace System.Ini
         {
             if (fileName == null)
                 throw new ArgumentNullException(nameof(fileName));
+
             string fullPath = GetFullPath(fileName);
-            Encoding encoding = AutoDetectEncoding(fullPath, Encoding.UTF8);
-            string content = File.Exists(fullPath) ? File.ReadAllText(fullPath, encoding) : string.Empty;
-            return new IniFile(content, settings ?? IniSettings.Default);
+            string content = File.Exists(fullPath) 
+                ? File.ReadAllText(fullPath, AutoDetectEncoding(fullPath, Encoding.UTF8)) 
+                : string.Empty;
+
+            return new IniFile(content, settings ?? IniSettings.Parse(content));
         }
 
         /// <summary>
@@ -2446,7 +2472,7 @@ namespace System.Ini
                 return list.ToArray();
             }
 
-            // Primitive or other – return as is.
+            // Primitive or other - return as is.
             return value;
         }
 
@@ -3708,6 +3734,10 @@ namespace System.Ini
                 // If the desired type is boolean, try custom conversion for boolean.
                 if (type == typeof(bool))
                 {
+                    // Flag mode.
+                    if (value == string.Empty)
+                        return true;
+
                     // Try to parse as integer (decimal) with no hex specifier.
                     if (int.TryParse(value, NumberStyles.Integer, _culture, out int number))
                         return number != 0;
@@ -4476,7 +4506,152 @@ namespace System.Ini
             return Read(section, key, defaultValue);
         }
 
+        /// <summary>
+        /// Reads a <see cref="DateTime"/> value associated with the specified section and key,
+        /// using the given format string and culture provider.
+        /// The value is parsed exactly according to the provided format.
+        /// </summary>
+        /// <param name="section">
+        /// The section name. Pass null to read global entries that appear above all sections.
+        /// </param>
+        /// <param name="key">
+        /// The key name.
+        /// </param>
+        /// <param name="format">
+        /// A standard or custom date/time format string (e.g., <c>"yyyy-MM-dd HH:mm:ss"</c>).
+        /// This format must exactly match the string stored in the INI file.
+        /// </param>
+        /// <param name="provider">
+        /// An <see cref="IFormatProvider"/> that supplies culture-specific formatting information.
+        /// If <c>null</c>, <see cref="CultureInfo.InvariantCulture"/> is used.
+        /// </param>
+        /// <param name="defaultValue">
+        /// The value to return if the specified entry is not found in the INI file.
+        /// </param>
+        /// <returns>
+        /// The parsed <see cref="DateTime"/> value. If the key does not exist, <paramref name="defaultValue"/> is returned.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="key"/> or <paramref name="format"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="FormatException">
+        /// Thrown when the stored string does not match the specified <paramref name="format"/>.
+        /// </exception>
+        public DateTime ReadDateTime(
+            string section,
+            string key,
+            string format,
+            IFormatProvider provider = null,
+            DateTime defaultValue = default)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+            if (format == null)
+                throw new ArgumentNullException(nameof(format));
 
+            string str = ReadString(section, key, null);
+            if (str == null)
+                return defaultValue;
+
+            return DateTime.ParseExact(str, format, provider ?? _culture);
+        }
+
+        /// <summary>
+        /// Reads a <see cref="DateTime"/> value associated with the specified section and key,
+        /// using the given culture provider and the standard date/time format of that culture.
+        /// </summary>
+        /// <param name="section">
+        /// The section name. Pass <c>null</c> to read global entries that appear above all sections.
+        /// </param>
+        /// <param name="key">
+        /// The key name. Cannot be <c>null</c>.
+        /// </param>
+        /// <param name="provider">
+        /// An <see cref="IFormatProvider"/> that supplies culture-specific formatting information.
+        /// This provider determines the expected format of the stored string.
+        /// </param>
+        /// <param name="defaultValue">
+        /// The value to return if the specified entry is not found in the INI file.
+        /// </param>
+        /// <returns>
+        /// The parsed <see cref="DateTime"/> value. If the key does not exist, <paramref name="defaultValue"/> is returned.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="key"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="FormatException">
+        /// Thrown when the stored string cannot be parsed using the standard format of the given culture.
+        /// </exception>
+        public DateTime ReadDateTime(
+            string section,
+            string key,
+            IFormatProvider provider,
+            DateTime defaultValue = default)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+
+            string str = ReadString(section, key, null);
+            if (str == null)
+                return defaultValue;
+
+            return DateTime.Parse(str, provider ?? _culture);
+        }
+
+        /// <summary>
+        /// Reads a <see cref="DateTime"/> value associated with the specified section and key,
+        /// using the given format, culture provider, and <see cref="DateTimeStyles"/>.
+        /// </summary>
+        /// <param name="section">
+        /// The section name. Pass <c>null</c> to read global entries that appear above all sections.
+        /// </param>
+        /// <param name="key">
+        /// The key name. Cannot be <c>null</c>.
+        /// </param>
+        /// <param name="format">
+        /// A standard or custom date/time format string (e.g., <c>"dd/MM/yyyy"</c>).
+        /// This format must exactly match the string stored in the INI file.
+        /// </param>
+        /// <param name="provider">
+        /// An <see cref="IFormatProvider"/> that supplies culture-specific formatting information.
+        /// If <c>null</c>, <see cref="CultureInfo.InvariantCulture"/> is used.
+        /// </param>
+        /// <param name="styles">
+        /// A combination of <see cref="DateTimeStyles"/> values that define the parsing behaviour
+        /// (e.g., <see cref="DateTimeStyles.AllowWhiteSpaces"/>).
+        /// </param>
+        /// <param name="defaultValue">
+        /// The value to return if the specified entry is not found in the INI file.
+        /// </param>
+        /// <returns>
+        /// The parsed <see cref="DateTime"/> value. If the key does not exist, <paramref name="defaultValue"/> is returned.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="key"/> or <paramref name="format"/> is <c>null</c>.
+        /// </exception>
+        /// <exception cref="FormatException">
+        /// Thrown when the stored string does not match the specified <paramref name="format"/>
+        /// or cannot be parsed according to the given <paramref name="styles"/>.
+        /// </exception>
+        public DateTime ReadDateTime(
+            string section,
+            string key,
+            string format,
+            IFormatProvider provider,
+            DateTimeStyles styles,
+            DateTime defaultValue = default)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+            if (format == null)
+                throw new ArgumentNullException(nameof(format));
+
+            string str = ReadString(section, key, null);
+            if (str == null)
+                return defaultValue;
+
+            return DateTime.ParseExact(str, format, provider ?? _culture, styles);
+        }
 
         #endregion
 
@@ -4547,7 +4722,7 @@ namespace System.Ini
 
                 if (firstSectionIndex < 0)
                 {
-                    // No sections at all – delete everything.
+                    // No sections at all - delete everything.
                     Content = string.Empty;
                 }
                 else
@@ -4583,7 +4758,7 @@ namespace System.Ini
                     if (match.Groups[_groupValue].Value.Equals(section, _comparison))
                         currentStart = match.Index;
                 }
-                // Entries are ignored – they're inside section ranges.
+                // Entries are ignored - they're inside section ranges.
             }
 
             // Close last range if it extends to the end.
@@ -5409,6 +5584,79 @@ namespace System.Ini
         public void WriteDateTime(string section, string key, DateTime value)
         {
             Write(section, key, value);
+        }
+
+        /// <summary>
+        /// Writes a <see cref="DateTime"/> value to the specified section and key,
+        /// formatting it according to the given format string and culture provider.
+        /// </summary>
+        /// <param name="section">
+        /// The section name. Pass <c>null</c> to write a global entry that appears above all sections.
+        /// </param>
+        /// <param name="key">
+        /// The key name. Cannot be <c>null</c>.
+        /// </param>
+        /// <param name="value">
+        /// The <see cref="DateTime"/> value to write.
+        /// </param>
+        /// <param name="format">
+        /// A standard or custom date/time format string (e.g., <c>"yyyy-MM-dd HH:mm:ss"</c>).
+        /// The value will be converted to a string using this format.
+        /// </param>
+        /// <param name="provider">
+        /// An <see cref="IFormatProvider"/> that supplies culture-specific formatting information.
+        /// If <c>null</c>, <see cref="CultureInfo.InvariantCulture"/> is used.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="key"/> or <paramref name="format"/> is <c>null</c>.
+        /// </exception>
+        public void WriteDateTime(
+            string section,
+            string key,
+            DateTime value,
+            string format,
+            IFormatProvider provider = null)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+            if (format == null)
+                throw new ArgumentNullException(nameof(format));
+
+            string str = value.ToString(format, provider ?? _culture);
+            WriteString(section, key, str);
+        }
+
+        /// <summary>
+        /// Writes a <see cref="DateTime"/> value to the specified section and key,
+        /// using the standard date/time format of the given culture provider.
+        /// </summary>
+        /// <param name="section">
+        /// The section name. Pass <c>null</c> to write a global entry that appears above all sections.
+        /// </param>
+        /// <param name="key">
+        /// The key name. Cannot be <c>null</c>.
+        /// </param>
+        /// <param name="value">
+        /// The <see cref="DateTime"/> value to write.
+        /// </param>
+        /// <param name="provider">
+        /// An <see cref="IFormatProvider"/> that supplies culture-specific formatting information.
+        /// The value will be converted using the culture's standard date/time patterns.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="key"/> is <c>null</c>.
+        /// </exception>
+        public void WriteDateTime(
+            string section,
+            string key,
+            DateTime value,
+            IFormatProvider provider)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+
+            string str = value.ToString(provider ?? _culture);
+            WriteString(section, key, str);
         }
 
         #endregion
