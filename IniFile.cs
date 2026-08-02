@@ -1,41 +1,48 @@
 /******************************************************************************
-
-•   File: IniFile.cs
-
-•   Description:
-
-    IniFile is a class that provides parsing,  editing,  and serialization 
-    of INI files using regular expressions.
-
-    The class provides functionality for:
-       - parsing INI files;
-       - reading and writing sections, keys, and values;
-       - supporting multiple values for the same key;
-       - adding, updating, and removing keys and sections;
-       - automatically mapping objects to and from INI files;
-       - reading and writing multiline values enclosed in '{' and '}';
-       - reading and writing embedded JSON blocks as raw strings or 
-         dynamic objects.
-
-    All modifications  preserve the original  formatting    of the   file,
-    including  whitespace, comments,  and   line   endings,   by operating
-    directly on the original text.
-
-    INI parsing behavior can be  configured,  including  string comparison
-    rules, multiline values, escape sequences, and other  parser options.
-
-    The class  can load INI  data  from strings, text readers, streams, or
-    files, and can save the modified content back without reformatting.
-
-•   License:
-
-    This software is distributed under the MIT License (MIT)
-
-    © 2024 Pavel Bashkardin.
-
-    See https://github.com/ng256/IniFile/blob/main/LICENSE for details.
-
-******************************************************************************/
+   
+   •   File: IniFile.cs
+   
+   •   Description:
+   
+       IniFile is a class that provides parsing, editing,  and  serialization 
+       of INI files using regular expressions.
+   
+       The class provides functionality for:
+          - parsing INI files;
+          - reading and writing sections, keys, and values;
+          - supporting multiple values for the same key;
+          - adding, updating, and removing keys and sections;
+          - automatically mapping objects to and from INI files;
+          - reading and writing multiline values enclosed in '{' and '}';
+          - reading and writing embedded JSON blocks as raw strings or 
+            dynamic objects;
+          - flexible interpretation of otherwise unrecognised text:
+            it can be treated as undefined,   as a key with an empty value
+            (flags), or as a value with an empty key (continuation lines);
+          - controlling whether the first or last duplicate key value is
+            returned.
+   
+       All  modifications  preserve  the  original  formatting  of  the file,
+       including  whitespace,  comments,  and  line  endings,  by  operating
+       directly on the original text.
+   
+       INI parsing behaviour can be configured through the IniSettings class,
+       including string comparison rules, multiline values, escape sequences,
+       allowed delimiters,  comment characters,   handling of spaces in keys,
+       undefined text mode, duplicate key override, and other parser options.
+   
+       The class can load INI data from strings,  text readers,  streams,  or
+       files, and can save the modified content back without reformatting.
+   
+   •   License:
+   
+       This software is distributed under the MIT License (MIT)
+   
+       © 2024-2026 Pavel Bashkardin.
+   
+       See https://github.com/ng256/IniFile/blob/main/LICENSE for details.
+   
+   ******************************************************************************/
 
 using System.Text;
 using System.Text.RegularExpressions;
@@ -85,6 +92,32 @@ namespace System.Ini
     }
 
     /// <summary>
+    /// Specifies how unrecognised text should be captured.
+    /// </summary>
+    public enum IniUndefinedTextMode
+    {
+        /// <summary>
+        /// Unrecognised text is captured as 'undefined'.
+        /// This is the default behaviour – the text is treated as an error or ignored.
+        /// </summary>
+        Undefined,
+
+        /// <summary>
+        /// Unrecognised text is treated as a key without a value (a flag).
+        /// It produces an 'entry' group containing a 'key' group with the text
+        /// and an empty 'value' group.
+        /// </summary>
+        Key,
+
+        /// <summary>
+        /// Unrecognised text is treated as a value with an empty key.
+        /// It produces an 'entry' group containing an empty 'key' group
+        /// and a 'value' group with the text.
+        /// </summary>
+        Value
+    }
+
+    /// <summary>
     /// Configuration settings for parsing INI files.
     /// </summary>
     public sealed class IniSettings
@@ -108,6 +141,25 @@ namespace System.Ini
         public bool AllowMultiLine { get; set; } = true;
 
         /// <summary>
+        /// Whether spaces are allowed within key names.
+        /// </summary>
+        public bool AllowSpacesInKey { get; set; } = false;
+
+        /// <summary>
+        /// Whether comments are allowed after values on the same line.
+        /// </summary>
+        public bool AllowInlineComments { get; set; } = true;
+
+        /// <summary>
+        /// Controls which value is returned when the same key appears more than once.
+        /// When <c>false</c> (default), <see cref="IniFile.ReadString"/> and similar methods
+        /// return the first occurrence. When <c>true</c>, they return the last occurrence
+        /// (later values override earlier ones). This setting does not affect
+        /// <see cref="IniFile.ReadStrings"/>, which always returns all values.
+        /// </summary>
+        public bool DuplicateKeyOverride { get; set; } = false;
+
+        /// <summary>
         /// Delimiter characters allowed between key and value.
         /// </summary>
         public IniDelimiterMode Delimiters { get; set; } = IniDelimiterMode.Both;
@@ -118,18 +170,16 @@ namespace System.Ini
         public IniCommentMode Comments { get; set; } = IniCommentMode.Both;
 
         /// <summary>
-        /// Whether spaces are allowed within key names.
+        /// Controls how text that does not match comment, section or entry is captured.
         /// </summary>
-        public bool AllowSpacesInKey { get; set; } = false;
-
-        // Common regex fragments (to avoid duplication and ensure consistency)
-        private const string WhitespaceBefore = @"[^\S\r\n]*";
-
+        public IniUndefinedTextMode UndefinedTextMode { get; set; } = IniUndefinedTextMode.Undefined;
 
         /// <summary>
         /// Initializes a new instance with default settings.
         /// </summary>
-        public IniSettings() { }
+        public IniSettings()
+        {
+        }
 
         /// <summary>
         /// Initializes a new instance with specified settings.
@@ -137,17 +187,20 @@ namespace System.Ini
         /// <param name="comparison">String comparison rules.</param>
         /// <param name="allowEscapeChars">Whether escape sequences are processed.</param>
         /// <param name="allowMultiLine">Whether multiline values are supported.</param>
+        /// <param name="allowSpacesInKey">Whether spaces are allowed in key names.</param>
+        /// <param name="allowInlineComments">Whether comments are allowed after values on the same line.</param>
         /// <param name="delimiters">Allowed delimiter characters.</param>
         /// <param name="comments">Allowed comment-start characters.</param>
-        /// <param name="allowSpacesInKey">Whether spaces are allowed in key names.</param>
-        public IniSettings(
-            StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
+        public IniSettings(StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
             bool allowEscapeChars = true,
             bool allowMultiLine = true,
+            bool allowSpacesInKey = false,
+            bool allowInlineComments = true,
             IniDelimiterMode delimiters = IniDelimiterMode.Both,
-            IniCommentMode comments = IniCommentMode.Both,
-            bool allowSpacesInKey = false)
+            IniCommentMode comments = IniCommentMode.Both
+            )
         {
+            AllowInlineComments = allowInlineComments;
             Comparison = comparison;
             AllowEscapeChars = allowEscapeChars;
             AllowMultiLine = allowMultiLine;
@@ -157,42 +210,6 @@ namespace System.Ini
         }
 
         // ********* Builds the regular expression pattern based on the current settings. *********
-
-        /*
-           FILE
-           ├── COMMENT
-           ├── KEY
-           ├── SEPARATOR
-           ├── VALUE
-           │    ├── BOOLEAN
-           │    │    ├── TRUE
-           │    │    └── FALSE
-           │    ├── NULL
-           │    ├── STRING
-           │    └── NUMBER
-           │
-           ├── ARRAY
-           │    ├── OPEN
-           │    └── CLOSE
-           │
-           ├── OBJECT
-           │    ├── OPEN
-           │    └── CLOSE
-           │
-           ├── WHITESPACE
-           ├── NEWLINE
-           └── UNDEFINED
-         */
-
-        internal string BuildJsonPattern()
-        {
-            return @"(?<Comment>//.*|/\*[\s\S]*?\*/)|" +
-                   @"(?<key>""[^""\\]*(?:\\.[^""\\]*)*"")(?=(?:\s|//.*|/\*.*?\*/)*:)|" +
-                   @"(?<value>(?<bool>true)|(?<bool>false)|(?<null>null)|""(?<string>[^""\\]*(?:\\.[^""\\]*)*)""|(?<number>-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?))|" +
-                   @"(?<value_sep>:)|(?<array_open>\[)|(?<array_sep>,)|(?<array_close>\])|" +
-                   @"(?<object_open>{)|(?<object_close>})|" +
-                   @"(?<whitespace>[^\S\r\n]+)|(?<newline>[\r\n]+)|(?<undefined>.+)";
-        }
 
         /*
          FILE
@@ -208,41 +225,11 @@ namespace System.Ini
          ├── LINE BREAK
          └── WHITESPACE
          */
-        // TODO:
-        // Temporary implementation.
-        // The hard-coded regex below is currently the only fully working version.
-        // Replace it with the modular generator once BuildRegexPattern() produces
-        // a regex that is fully equivalent to the reference regular expression.
-        internal string BuildIniPattern()
-        {
-            string commentChars = GetCommentCharacters();
-            string delimiter = GetDelimiterCharacters();
-            string keyInv = AllowSpacesInKey ? delimiter : delimiter + " ";
 
-            string tmp = @"(?=\S)(?<text>(?<comment>(?<open>[#;]+)(?:[^\S\r\n]*)(?<value>.*))|" +
-                         @"(?<section>(?<open>\[)(?:\s*)(?<value>[^\]\r\n]*?\S)(?:[^\S\r\n]*)(?<close>\]))|" +
-                         (AllowMultiLine
-                             ? @"(?<entry>(?<key>[^=:\r\n\[\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:\s*(?<value>\{(?:(?>(?:""(?:\\.|[^""])*""|//[^\r\n]*|/\*[\s\S]*?\*/|[^{}""/]+|/(?![/*])))|(?<o>\{)|(?<-o>\}))*(?(o)(?!))\})|((?:[^\S\r\n]*)(?<value>[^#;\r\n]*))))|"
-                             : @"(?<entry>(?<key>[^=:\r\n\ [\]]*\S)(?:[^\S\r\n]*)(?<delimiter>:|=)(?:[^\S\r\n]*)(?<value>[^#;\r\n]*))|") +
-                         @"(?<undefined>.+))(?<=\S)|" +
-                         @"(?<linebreaker>\r\n|\n)|" +
-                         @"(?<whitespace>[^\S\r\n]+)";
-
-
-            return tmp;
-
-        }
-
-        // Experimental implementation.
-        //
-        // This is an attempt to build the regex from independent grammar fragments.
-        // The generated regex is currently NOT equivalent to the reference regular expression and
-        // fails some parsing scenarios.
-        //
-        // Keep for further development until it fully replaces the temporary version.
+        // Configurable regex builder for INI pattern.
         internal string BuildIniPatternEx()
         {
-            // 1. Text token: must start with a non‑whitespace character and end with one.
+            // 1. Text token – must start and end with a non‑whitespace character.
             string textPattern = $@"(?=\S)(?<text>{BuildTextPattern()})(?<=\S)";
 
             // 2. Line breaker: captures CRLF or LF.
@@ -250,164 +237,156 @@ namespace System.Ini
             return $"{textPattern}|{BuildLineBreakerPattern()}|{BuildWhitespacePattern()}";
         }
 
+        // ---- Grammar fragments ----
+
         // Text pattern – combines comment, section, entry, and undefined.
         private string BuildTextPattern()
         {
             return $"{BuildCommentPattern()}|{BuildSectionPattern()}|{BuildEntryPattern()}|{BuildUndefinedPattern()}";
         }
 
-        // Comment pattern
+        // Comment pattern.
+        // The full comment is captured in group 'comment'.
         private string BuildCommentPattern()
         {
-            string commentChars = GetCommentCharacters();
-
-            // "(?<comment>(?<open>[#;]+)(?:[^\S\r\n]*)(?<value>.*))|"
-
-            // The full comment is captured in group 'comment'.
-            // Must match at least one character after the comment marker (use .+ not .*)
-            return $@"(?<comment>" +
-                        // 1. Opening comment characters (e.g., # or ;) – captured as 'open'.
-                        $@"(?<open>[{commentChars}]+)" +
-                        // 2. Optional whitespace (spaces/tabs) between the comment marker and the text.
-                        @"(?:[^\S\r\n]*)" +
-                        // 3. The comment text – everything up to the end of the line (captured as 'value').
-                        @"(?<value>.*)" +
-                    @")";
+            string commentChars = BuildCommentCharacters();   // e.g. "#;"
+            return
+                @"(?<comment>" +
+                    @"(?<open>[" + commentChars + @"]+)" +  // One or more comment characters.
+                    @"(?:[^\S\r\n]*)" +                     // Trailing whitespaces.
+                    @"(?<value>.*)" +                       // Comment text.
+                @")";
         }
 
         // Section pattern.
         private string BuildSectionPattern()
         {
-            // Capture entire section header with nested groups: open bracket, value (name), close bracket.
-            return $@"(?<section>" +
-                        // 1. Opening bracket '['.
-                        @"(?<open>\[)" +
-                        // 2. Optional whitespace after '['.
-                        @"\s*" +
-                        // 3. Section name: any char except ']' and newline, ending with at least one non-whitespace.
-                        @"(?<value>[^\]]*\S+)" +
-                        // 4. Optional whitespace before closing bracket.
-                        @"[^\S\r\n]*" +
-                        // 5. Closing bracket ']'.
-                        @"(?<close>\]))" +
-                    $@")";
+            return
+                @"(?<section>" +
+                    @"(?<open>\[)" +                         // Opening bracket '['.
+                    @"(?:[^\S\r\n]*)" +
+                    @"(?<value>[^\]\r\n]*?\S)" +             // Section name: any chars except ']', CR, LF;
+                                                             // Lazy match, must end with a non‑whitespace character.
+                    @"(?:[^\S\r\n]*)" +
+                    @"(?<close>\])" +                        // Closing bracket ']'.
+                @")";
         }
 
-        // Entry pattern (key + delimiter + value)
+        // Full entry pattern.
         private string BuildEntryPattern()
         {
-            // Full entry is captured as group 'entry'.
-            return $@"(?<entry>" +
-                        // 1. Key pattern (non‑empty, excludes delimiter chars, brackets, etc.)
-                        BuildKeyPattern() +
-                        // 2. Optional whitespace before the delimiter
-                        WhitespaceBefore +
-                        // 3. Delimiter (either '=' or ':' as configured)
-                        BuildDelimiterPattern() +
-                        // 4. Value (plain or multiline JSON‑like object)
-                        BuildValuePattern() +
-                    $@")";
+            return
+                @"(?<entry>" +
+                    BuildKeyPattern() +                     // Key pattern.
+                    @"(?:[^\S\r\n]*)" +
+                    BuildDelimiterPattern() +               // Delimiter pattern.
+                    BuildValuePattern() +                   // Value pattern.
+                @")";
         }
 
         // Key pattern.
         private string BuildKeyPattern()
         {
-            string delimiterChars = GetDelimiterCharacters();
-            // Build character class: forbid delimiter chars, CR, LF, brackets, and optionally space.
-            string forbidden = delimiterChars + "\r\n\\[\\]";
+            // Build the actual delimiter characters for the forbidden class.
+            string delimChars;
+
+            if (Delimiters == IniDelimiterMode.Equals)
+                delimChars = "=";
+            else if (Delimiters == IniDelimiterMode.Colon)
+                delimChars = ":";
+            else
+                delimChars = ":=";   // Both or Default
+
+            // Always forbidden: delimiter chars, line breaks, brackets.
+            string forbidden = delimChars + @"\r\n\[\]";
+
+            // Spaces in keys are controlled exclusively by AllowSpacesInKey.
             if (!AllowSpacesInKey)
                 forbidden += " ";
 
-            // No Regex.Escape here – we already have properly escaped characters.
-            return $@"(?<key>[^{forbidden}]*\S)";
+            return
+                @"(?<key>" +
+                    @"[^" + forbidden + @"]*" +             // Zero or more characters that are NOT in the forbidden set.
+                    @"\S" +                                 // The key must end with at least one non‑whitespace character.
+                @")";
         }
 
         // Delimiter pattern.
         private string BuildDelimiterPattern()
         {
-            string delimiterChars = GetDelimiterCharacters();
-            // Equivalent to (?:=|\:) but simpler with character class.
-            return $@"(?<delimiter>[{delimiterChars}])";
+            // Use an alternation, exactly as the original regex does.
+            switch (Delimiters)
+            {
+                case IniDelimiterMode.Equals: return @"(?<delimiter>=)";
+                case IniDelimiterMode.Colon: return @"(?<delimiter>:)";
+                default: return @"(?<delimiter>:|=)";   // Both.
+            }
         }
 
         // Value pattern (plain or multiline object).
         private string BuildValuePattern()
         {
+            // Determine comment characters for the exclusion class.
+            string commentChars = BuildCommentCharacters();
+            string exclude = $@"[^{commentChars}\r\n]*";
+
+
             if (AllowMultiLine)
             {
-                // Two alternatives:
-                // 1. Optional whitespace, then a balanced object in braces (captured as 'value');
-                // 2. Optional whitespace, then any text up to a comment character or end of line (captured as 'value').
-                // Use comment characters from settings.
-                string commentExclude = GetCommentCharacters();
-                // Build a character class that excludes comment chars and line breaks (no extra ';').
-                string excludeClass = $@"[^{Regex.Escape(commentExclude)}\r\n]*";
-
-                return
-                    $@"(?:" +
-                        $@"\s*(?<value>{BuildObjectPattern()})" +
-                        $@"|" +
-                        $@"({WhitespaceBefore}(?<value>{excludeClass}))" +
-                    $@")";
+                // Multiline: two alternatives.
+                // 1. Optional horizontal whitespace, then a balanced JSON‑like object (captured as 'value').
+                // 2. Optional horizontal whitespace, then any text except comment chars or line breaks.
+                string obj = BuildObjectPattern();
+                return $@"(?:\s*(?<value>{obj})|((?:[^\S\r\n]*)(?<value>{exclude})))";
             }
-
-            // Simple mode: optional whitespace, then any text up to a comment or end of line.
-            // Wrap in a capturing group for consistency with the multiline mode.
-            string simpleExclude = $@"[^{Regex.Escape(GetCommentCharacters())}\r\n]*";
-            return $@"({WhitespaceBefore}(?<value>{simpleExclude}))";
+            else
+            {
+                // Single‑line: optional horizontal whitespace, then any text except comment chars or line breaks.
+                return $@"(?:[^\S\r\n]*)(?<value>{exclude})";
+            }
         }
 
         // Multiline JSON‑like object (balanced braces with embedded comments).
         private string BuildObjectPattern()
         {
-            return
-                // Opening brace.
-                @"\{" +
-
-                // Zero or more tokens inside the object.
-                @"(?:" +
-
-                    // Atomically match a single token (no backtracking inside).
-                    @"(?>" +
-
-                        // Possible token types:
-
-                        // 1. Double‑quoted string with escapes
-                        @"""""(?:\\.|[^""""])*""""|" +
-
-                        // 2. Single‑line C‑style comment //...
-                        @"//[^\r\n]*|" +
-
-                        // 3. Multi‑line C‑style comment /* ... */
-                        @"/\*[\s\S]*?\*/|" +
-
-                        // 4. Ordinary text (anything except braces, quotes, or slash).
-                        @"[^{}""""/]+|" +
-
-                        // 5. A slash that is not the start of a comment (e.g., in a path).
-                        @"/(?![/*])" +
-
-                    @")" +
-
-                    // 6. An opening brace – push onto the balance stack.
-                    @"|(?<o>\{)" +
-
-                    // 7. A closing brace – pop from the balance stack.
-                    @"|(?<-o>\})" +
-
-                @")*" +
-
-                // After the loop, ensure the stack is empty (all braces balanced).
-                @"(?(o)(?!))" +
-
-                // Closing brace.
-                @"\}";
+            // Balanced braces with support for comments and strings.
+            return @"\{" +
+                   @"(?:" +
+                       @"(?>" +
+                           @"""(?:\\.|[^""])*""|" +           // Double‑quoted string.
+                           @"//[^\r\n]*|" +                   // Single‑line comment.
+                           @"/\*[\s\S]*?\*/|" +               // Multi‑line comment.
+                           @"[^{}""/]+|" +                    // Ordinary text.
+                           @"/(?![/*])" +                     // A slash not starting a comment.
+                       @")" +
+                       @"|(?<o>\{)" +                         // Opening brace → push.
+                       @"|(?<-o>\})" +                        // Closing brace → pop.
+                   @")*" +
+                   @"(?(o)(?!))" +                            // Fail if unbalanced.
+                   @"\}";
         }
 
-        // Undefined (catch‑all).
+        // Undefined pattern – handles all text that doesn't match comment, section or entry.
+        // The behaviour depends on UndefinedTextMode:
+        //   - Undefined → captures the text in a plain 'undefined' group.
+        //   - Key       → creates a complete 'entry' with a 'key' group and an empty 'value'.
+        //   - Value     → creates a complete 'entry' with an empty 'key' and a 'value' group.
         private string BuildUndefinedPattern()
         {
-            return @"(?<undefined>.+)";
+            switch (UndefinedTextMode)
+            {
+                // Treat as an entry with a key only.
+                case IniUndefinedTextMode.Key:
+                    return @"(?<entry>(?<key>.+))";
+
+                // Treat as an entry with a value only.
+                case IniUndefinedTextMode.Value:
+                    return @"(?<entry>(?<value>.+))";
+
+                // Treat as undefined text, not an entry.
+                default:
+                    return @"(?<undefined>.+)";
+            }
         }
 
         // Line breaker pattern.
@@ -422,8 +401,8 @@ namespace System.Ini
             return @"(?<whitespace>(?>[^\S\r\n]+))";
         }
 
-        // Helper: get comment characters based on CommentMode.
-        private string GetCommentCharacters()
+        // Comment characters based on CommentMode.
+        private string BuildCommentCharacters()
         {
             switch (Comments)
             {
@@ -434,27 +413,77 @@ namespace System.Ini
                 default:
                     return "#;";
             }
-
-            var mode = Comments == IniCommentMode.Default ? IniCommentMode.Both : Comments;
-            string chars = "";
-            if ((mode & IniCommentMode.Hash) != 0) chars += "#";
-            if ((mode & IniCommentMode.Semicolon) != 0) chars += ";";
-            return string.IsNullOrEmpty(chars) ? "#;" : chars;
         }
 
-        // Helper: get delimiter characters based on DelimiterMode.
-        private string GetDelimiterCharacters()
-        {
+        /*
+        FILE
+        ├── COMMENT
+        ├── KEY
+        ├── SEPARATOR
+        ├── VALUE
+        │    ├── BOOLEAN
+        │    │    ├── TRUE
+        │    │    └── FALSE
+        │    ├── NULL
+        │    ├── STRING
+        │    └── NUMBER
+        │
+        ├── ARRAY
+        │    ├── OPEN
+        │    └── CLOSE
+        │
+        ├── OBJECT
+        │    ├── OPEN
+        │    └── CLOSE
+        │
+        ├── WHITESPACE
+        ├── NEWLINE
+        └── UNDEFINED
+        */
 
-            switch (Delimiters)
-            {
-                case IniDelimiterMode.Equals:
-                    return "=";
-                case IniDelimiterMode.Colon:
-                    return ":";
-                default:
-                    return ":|=";
-            }
+        // Configurable regex builder for JSON pattern.
+        internal string BuildJsonPattern()
+        {
+            return
+                // 1. Comment token – single‑line // ... or multi‑line /* ... */
+                @"(?<Comment>//.*|/\*[\s\S]*?\*/)|" +
+
+                // 2. Key token – a double‑quoted string immediately followed (after optional
+                //    whitespace/comments) by a colon. The colon is not consumed.
+                @"(?<key>""[^""\\]*(?:\\.[^""\\]*)*"")(?=(?:\s|//.*|/\*.*?\*/)*:)|" +
+
+                // 3. Value token – boolean, null, string, or number
+                @"(?<value>" +
+                    @"(?<bool>true)|(?<bool>false)" + // Boolean.
+                    @"(?<null>null)|" +               // Null.
+                    @"""(?<string>[^""\\]*" +         // String: opening quote, content...
+                    @"(?:\\.[^""\\]*)*)""|" +         // ...with escapes, then closing quote
+                    @"(?<number>" +                   // Number:
+                        @"-?" +                       // - optional minus;
+                        @"(?:0|[1-9][0-9]*)" +        // - integer part;
+                        @"(?:\.[0-9]+)?" +            // - optional fractional part;
+                        @"(?:[eE][+-]?[0-9]+)?" +     // - optional exponent.
+                    @")" +
+                @")|" +
+
+                // 4. Structural tokens
+                @"(?<value_sep>:)|" +           // Colon that separates key and value
+                @"(?<array_open>\[)|" +         // Array opening bracket
+                @"(?<array_sep>,)|" +           // Array element separator
+                @"(?<array_close>\])|" +        // Array closing bracket
+
+                // 5. Object braces
+                @"(?<object_open>{)|" +         // Object opening brace
+                @"(?<object_close>})|" +        // Object closing brace
+
+                // 6. Whitespace – any sequence of spaces or tabs (no line breaks).
+                @"(?<whitespace>[^\S\r\n]+)|" +
+
+                // 7. Newline – CRLF or LF.
+                @"(?<newline>[\r\n]+)|" +
+
+                // 8. Undefined – catch‑all for any other non‑whitespace content.
+                @"(?<undefined>.+)";
         }
     }
 
@@ -640,6 +669,10 @@ namespace System.Ini
         [NonSerialized]
         private readonly bool _allowMultiLine;
 
+        // Indicates whether value has been overriden when the same key appears more than once.
+        [NonSerialized]
+        private readonly bool _allowOverrides;
+
         // String used to represent line breaks in the INI file.
         [NonSerialized]
         private readonly string _lineBreaker = Environment.NewLine;
@@ -721,12 +754,14 @@ namespace System.Ini
             if ((uint)comparison > (uint)StringComparison.OrdinalIgnoreCase)
                 throw new ArgumentOutOfRangeException(nameof(settings.Comparison));
             var comparer = GetComparer(comparison);
-            var iniPattern = settings.BuildIniPattern();
+            var iniPattern = settings.BuildIniPatternEx();
+            var jsonPattern = settings.BuildJsonPattern();
             var regexOptions = GetRegexOptions(comparison, RegexOptions.Compiled | RegexOptions.ExplicitCapture);
 
             _comparison = comparison;
             _allowEscapeChars = settings.AllowEscapeChars;
             _allowMultiLine = settings.AllowMultiLine;
+            _allowOverrides = settings.DuplicateKeyOverride;
             _defaultDelimiter = GetDelimiter(settings.Delimiters);
             _culture = GetCultureInfo(comparison);
             _lineBreaker = AutoDetectLineBreaker(content);
@@ -736,14 +771,7 @@ namespace System.Ini
 
             // Initialize parsing engine.
             _iniRegex = new Regex(iniPattern, regexOptions);
-            _jsonRegex = new Regex(
-                                    @"(?<Comment>//.*|/\*[\s\S]*?\*/)|" +
-                                    @"(?<key>""[^""\\]*(?:\\.[^""\\]*)*"")(?=(?:\s|//.*|/\*.*?\*/)*:)|" +
-                                    @"(?<value>(?<bool>true)|(?<bool>false)|(?<null>null)|""(?<string>[^""\\]*(?:\\.[^""\\]*)*)""|(?<number>-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?))|" +
-                                    @"(?<value_sep>:)|(?<array_open>\[)|(?<array_sep>,)|(?<array_close>\])|" +
-                                    @"(?<object_open>{)|(?<object_close>})|" +
-                                    @"(?<whitespace>[^\S\r\n]+)|(?<newline>[\r\n]+)|(?<undefined>.+)",
-                                    regexOptions);
+            _jsonRegex = new Regex(jsonPattern, regexOptions);
 
             // Cache group numbers.
             _groupSection = _iniRegex.GroupNumberFromName("section");
@@ -825,7 +853,7 @@ namespace System.Ini
         /// <param name="settings">The parsing settings, or null for defaults.</param>
         /// <returns>A new <see cref="IniFile"/> instance.</returns>
         /// <exception cref="ArgumentNullException">Thrown when <paramref name="stream"/> is null.</exception>
-        public static IniFile Load(Stream stream, Encoding encoding = null, IniSettings settings = null)
+        public static IniFile Load(Stream stream, Encoding encoding, IniSettings settings = null)
         {
             if (stream == null)
                 throw new ArgumentNullException(nameof(stream));
@@ -842,7 +870,7 @@ namespace System.Ini
         /// <param name="settings">The parsing settings, or null for defaults.</param>
         /// <returns>A new <see cref="IniFile"/> instance.</returns>
         /// <exception cref="ArgumentNullException">Thrown when <paramref name="fileName"/> is null.</exception>
-        public static IniFile Load(string fileName, Encoding encoding = null, IniSettings settings = null)
+        public static IniFile Load(string fileName, Encoding encoding, IniSettings settings = null)
         {
             if (fileName == null)
                 throw new ArgumentNullException(nameof(fileName));
@@ -877,7 +905,7 @@ namespace System.Ini
         /// <param name="settings">The parsing settings, or null for defaults.</param>
         /// <returns>A new <see cref="IniFile"/> instance.</returns>
         /// <exception cref="ArgumentNullException">Thrown when <paramref name="fileName"/> is null.</exception>
-        public static IniFile LoadOrCreate(string fileName, Encoding encoding = null, IniSettings settings = null)
+        public static IniFile LoadOrCreate(string fileName, Encoding encoding, IniSettings settings = null)
         {
             if (fileName == null)
                 throw new ArgumentNullException(nameof(fileName));
@@ -1268,7 +1296,9 @@ namespace System.Ini
                         if (_allowEscapeChars) value = UnEscape(value);
                     }
 
-                    return value;
+                    // If override mode is off, return the first match immediately.
+                    // Otherwise keep scanning...
+                    if (!_allowOverrides) return value;
                 }
             }
 
