@@ -1,5 +1,7 @@
 # IniFile Library: Detailed Description
 
+This document is a complete technical description of the IniFile library, a one-line, external-dependency-free parser and editor for INI files for .NET. The document provides a detailed overview of the library's purpose and scope, its key features (format preservation, flexible parsing, support for JSON and attribute serialization), internal class structure and mechanisms (regular expressions, caching, and optimizations), practical usage examples, strengths, and limitations. This material is intended for developers who want to integrate or modify the library, as well as for creating a technical specification based on the existing code.
+
 ## Contents
 
 - [1. General Purpose](#1-general-purpose)
