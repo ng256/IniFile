@@ -120,34 +120,41 @@ namespace System.Ini
     /// <summary>
     /// Configuration settings for parsing INI files.
     /// </summary>
+    [IniSection("")]
     public sealed class IniSettings
     {
         // Gets the default settings instance.
+        [IniIgnore]
         internal static IniSettings Default { get; } = new IniSettings();
 
         /// <summary>
         /// String comparison rules (case sensitivity, culture).
         /// </summary>
+        [IniEntry("comparison")]
         public StringComparison Comparison { get; set; } = StringComparison.InvariantCultureIgnoreCase;
 
         /// <summary>
         /// Whether escape sequences (e.g., \n, \t) are processed in values.
         /// </summary>
+        [IniEntry("escape_chars")]
         public bool AllowEscapeChars { get; set; } = true;
 
         /// <summary>
         /// Whether multiline values wrapped in { } are supported.
         /// </summary>
+        [IniEntry("muli_line")]
         public bool AllowMultiLine { get; set; } = true;
 
         /// <summary>
         /// Whether spaces are allowed within key names.
         /// </summary>
+        [IniEntry("space_in_key")]
         public bool AllowSpacesInKey { get; set; } = false;
 
         /// <summary>
         /// Whether comments are allowed after values on the same line.
         /// </summary>
+        [IniEntry("inline_comment")]
         public bool AllowInlineComments { get; set; } = true;
 
         /// <summary>
@@ -157,21 +164,25 @@ namespace System.Ini
         /// (later values override earlier ones). This setting does not affect
         /// <see cref="IniFile.ReadStrings"/>, which always returns all values.
         /// </summary>
+        [IniEntry("dup_key_overrides")]
         public bool DuplicateKeyOverride { get; set; } = false;
 
         /// <summary>
         /// Delimiter characters allowed between key and value.
         /// </summary>
+        [IniEntry("delimiter")]
         public IniDelimiterMode Delimiters { get; set; } = IniDelimiterMode.Both;
 
         /// <summary>
         /// Comment-start characters recognised in the file.
         /// </summary>
+        [IniEntry("comment")]
         public IniCommentMode Comments { get; set; } = IniCommentMode.Both;
 
         /// <summary>
         /// Controls how text that does not match comment, section or entry is captured.
         /// </summary>
+        [IniEntry("undef_text")]
         public IniUndefinedTextMode UndefinedTextMode { get; set; } = IniUndefinedTextMode.Undefined;
 
         /// <summary>
@@ -207,6 +218,31 @@ namespace System.Ini
             Delimiters = delimiters;
             Comments = comments;
             AllowSpacesInKey = allowSpacesInKey;
+        }
+
+        /// <summary>
+        /// Reads the INI settings from the specified file and returns a new <see cref="IniSettings"/> instance
+        /// populated with the values from the file.
+        /// </summary>
+        /// <param name="fileName">Path to the INI file.</param>
+        /// <param name="encoding">The encoding to use when reading the file. If <c>null</c>, auto-detection is attempted.</param>
+        /// <returns>A new <see cref="IniSettings"/> instance with values read from the file, or default values if the file does not exist.</returns>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="fileName"/> is <c>null</c>.</exception>
+        public static IniSettings ReadFromFile(string fileName, Encoding encoding = null)
+        {
+            if (fileName == null)
+                throw new ArgumentNullException(nameof(fileName));
+
+
+            // Load or create an empty INI file (if the file doesn't exist, an empty instance is returned).
+            var tmpSettings = new IniSettings() { UndefinedTextMode = IniUndefinedTextMode.Key };
+            var ini = IniFile.LoadOrCreate(fileName, encoding, tmpSettings);
+            var settings = new IniSettings();
+
+            // Populate settings using the IniSection and IniEntry attributes defined on the properties.
+            ini.ReadSettings(settings);
+
+            return settings;
         }
 
         // ********* Builds the regular expression pattern based on the current settings. *********
@@ -289,10 +325,11 @@ namespace System.Ini
         {
             // Build the actual delimiter characters for the forbidden class.
             string delimChars;
+            var delimiter = Delimiters & IniDelimiterMode.Both;
 
-            if (Delimiters == IniDelimiterMode.Equals)
+            if (delimiter == IniDelimiterMode.Equals)
                 delimChars = "=";
-            else if (Delimiters == IniDelimiterMode.Colon)
+            else if (delimiter == IniDelimiterMode.Colon)
                 delimChars = ":";
             else
                 delimChars = ":=";   // Both or Default
@@ -328,7 +365,7 @@ namespace System.Ini
         {
             // Determine comment characters for the exclusion class.
             string commentChars = BuildCommentCharacters();
-            string exclude = $@"[^{commentChars}\r\n]*";
+            string exclude = AllowInlineComments ? @"[^\r\n]*" : $@"[^{commentChars}\r\n]*";
 
 
             if (AllowMultiLine)
@@ -404,7 +441,8 @@ namespace System.Ini
         // Comment characters based on CommentMode.
         private string BuildCommentCharacters()
         {
-            switch (Comments)
+            var comments = Comments & IniCommentMode.Both;
+            switch (comments)
             {
                 case IniCommentMode.Hash:
                     return "#";
@@ -536,15 +574,12 @@ namespace System.Ini
         /// <summary>
         /// Gets the name of the INI section.
         /// </summary>
-        public string Name
-        {
-            get => _sectionName;
-        }
+        public string Name => _sectionName;
 
         /// <inheritdoc />
         public override bool IsDefaultAttribute()
         {
-            return string.IsNullOrEmpty(_sectionName);
+            return _sectionName == null;
         }
 
         /// <inheritdoc />
@@ -595,7 +630,7 @@ namespace System.Ini
         /// <inheritdoc />
         public override bool IsDefaultAttribute()
         {
-            return string.IsNullOrEmpty(_entryName);
+            return _entryName == null;
         }
 
         /// <inheritdoc />
@@ -3831,6 +3866,12 @@ namespace System.Ini
             if (converter == null)
                 converter = TypeDescriptor.GetConverter(typeof(T));
 
+            if (typeof(T) == typeof(bool))
+                return (T)(object)ReadBoolean(section, key, (bool)(object)defaultValue);
+
+            if (typeof(T) == typeof(char))
+                return (T)(object)ReadChar(section, key, (char)(object)defaultValue);
+
             // Attempt to read the string value from the INI file for the given section and key.
             string value = ReadString(section, key, null);
 
@@ -4108,6 +4149,10 @@ namespace System.Ini
             string value = ReadString(section, key, null);
             if (value == null)
                 return defaultValue;
+
+            // Flag mode.
+            if (value == string.Empty)
+                return true;
 
             // Try to parse as integer (decimal) with no hex specifier.
             if (int.TryParse(value, NumberStyles.Integer, _culture, out int number))
