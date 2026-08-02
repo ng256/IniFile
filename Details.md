@@ -1,5 +1,48 @@
 # IniFile Library: Detailed Description
 
+## Contents
+
+- [1. General Purpose](#1-general-purpose)
+- [2. Key Features](#2-key-features)
+  - [2.1. Formatting Preservation](#21-formatting-preservation)
+  - [2.2. Parsing Flexibility](#22-parsing-flexibility)
+  - [2.3. Duplicate Key Support](#23-duplicate-key-support)
+  - [2.4. Multi-line Values](#24-multi-line-values)
+  - [2.5. Built-in JSON Support](#25-built-in-json-support)
+  - [2.6. Attribute-based Serialization](#26-attribute-based-serialization)
+- [3. Library Structure](#3-library-structure)
+  - [3.1. Namespace](#31-namespace)
+  - [3.2. Enums](#32-enums)
+  - [3.3. IniSettings Class](#33-inisettings-class)
+  - [3.4. Serialization Attributes](#34-serialization-attributes)
+  - [3.5. Main IniFile Class](#35-main-inifile-class)
+    - [3.5.1. Fields and Properties](#351-fields-and-properties)
+    - [3.5.2. Factory Methods](#352-factory-methods)
+    - [3.5.3. Save Methods](#353-save-methods)
+    - [3.5.4. Static Quick Access Methods](#354-static-quick-access-methods)
+    - [3.5.5. Data Read Methods](#355-data-read-methods)
+    - [3.5.6. Data Write Methods](#356-data-write-methods)
+    - [3.5.7. Indexers](#357-indexers)
+- [4. Internal Mechanisms and Implementation Details](#4-internal-mechanisms-and-implementation-details)
+  - [4.1. Regex-based Parsing](#41-regex-based-parsing)
+  - [4.2. Multi-line Value Handling](#42-multi-line-value-handling)
+  - [4.3. Escape Sequences](#43-escape-sequences)
+  - [4.4. Automatic Formatting Detection](#44-automatic-formatting-detection)
+  - [4.5. String Operation Optimization](#45-string-operation-optimization)
+  - [4.6. Duplicate Key Handling](#46-duplicate-key-handling)
+  - [4.7. Object Serialization](#47-object-serialization)
+  - [4.8. Type Conversion](#48-type-conversion)
+  - [4.9. Security and Error Handling](#49-security-and-error-handling)
+  - [4.10. Extensibility](#410-extensibility)
+- [5. Usage Examples](#5-usage-examples)
+  - [5.1. Basic Read/Write](#51-basic-readwrite)
+  - [5.2. Working with JSON](#52-working-with-json)
+  - [5.3. Object Serialization via Attributes](#53-object-serialization-via-attributes)
+  - [5.4. Working with Duplicate Keys](#54-working-with-duplicate-keys)
+- [6. Strengths and Limitations](#6-strengths-and-limitations)
+- [7. Recommended Use Cases](#7-recommended-use-cases)
+- [8. Dependencies and Requirements](#8-dependencies-and-requirements)
+
 ---
 
 ## 1. General Purpose
