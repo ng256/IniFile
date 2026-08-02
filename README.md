@@ -45,7 +45,6 @@ See [Details](https://github.com/ng256/IniFile/blob/main/Details.md) document fo
 5. [Static Helper Methods](#static-helper-methods)
 6. [Configuration with `IniSettings`](#configuration-with-inisettings)
     - [Settings Overview](#settings-overview)
-    - [Example](#example-1)
 7. [Embedded Parser Settings (Directives)](#embedded-parser-settings-directives)
     - [Advantages](#advantages)
     - [Syntax](#syntax)
