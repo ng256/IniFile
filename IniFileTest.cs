@@ -16,10 +16,10 @@
 
 ******************************************************************************/
 
-using System.Text;
 using System.Ini;
+using System.Text;
 
-namespace IniFileTest
+namespace TestIni
 {
     // Classes for testing automatic serialization via attributes
     [IniSection("Network")]
@@ -61,6 +61,13 @@ namespace IniFileTest
 
         static void Main(string[] args)
         {
+            var settings = new IniSettings() { UndefinedTextMode = IniUndefinedTextMode.Value };
+            var ini = IniFile.Load("temp.ini", settings);
+            //var key = ini.ReadKeys();
+            //var value = ini.ReadString(null, "");
+            var map = ini.ExportToDictionary();
+
+
             Run(args);
         }
 
@@ -581,6 +588,9 @@ another_colon_key : 123
             string[] expectedKeys13 = { "key_with_colon", "json_colon", "another_colon_key" };
             string[] actualKeys13 = ini.ReadKeys("Section13");
             RunTest(testNum, "ReadKeys (Section13)", expectedKeys13, actualKeys13, "Keys in Section13");
+
+            TestUndefinedTextModes(ref testNum);
+            TestDuplicateKeyOverride(ref testNum);
         }
 
         private static void TestJustify(int testNum)
@@ -626,6 +636,155 @@ key1=multi2
             justified = justified.Replace("\r\n", "\n").Replace("\r", "\n");
 
             RunTest(testNum, "Justify", expected, justified, "Compact INI without comments/blank/undefined");
+        }
+
+        // -------------------- Tests for IniUndefinedTextMode --------------------
+        private static void TestUndefinedTextModes(ref int testNum)
+        {
+
+            // Test 41: UndefinedTextMode.Key – bare words become keys with empty values
+            testNum++;
+            {
+                string content = "flag1\nflag2";
+                var settings = new IniSettings
+                {
+                    UndefinedTextMode = IniUndefinedTextMode.Key,
+                    AllowMultiLine = false,
+                    Delimiters = IniDelimiterMode.Both,
+                    Comments = IniCommentMode.Both,
+                    AllowSpacesInKey = false
+                };
+                var ini = IniFile.Load(new StringReader(content), settings);
+                string[] keys = ini.ReadKeys();
+                bool keysOk = keys.Length == 2 && keys[0] == "flag1" && keys[1] == "flag2";
+                string val1 = ini.ReadString("", "flag1", "NOVALUE");
+                string val2 = ini.ReadString("", "flag2", "NOVALUE");
+                keysOk = keysOk && val1 == "" && val2 == "";
+                RunTest(testNum, "UndefinedTextMode.Key – bare words become keys with empty values",
+                    true, keysOk, "flag1 and flag2 appear as global keys with empty values");
+            }
+
+            // Test 42: UndefinedTextMode.Key – existing key=value entries still work
+            testNum++;
+            {
+                string content = "flag1\nkey2=val2\nflag3";
+                var settings = new IniSettings
+                {
+                    UndefinedTextMode = IniUndefinedTextMode.Key,
+                    AllowMultiLine = false
+                };
+                var ini = IniFile.Load(new StringReader(content), settings);
+                bool key2Ok = ini.ReadString("", "key2", null) == "val2";
+                bool flag1Ok = ini.ReadString("", "flag1", null) == "";
+                bool flag3Ok = ini.ReadString("", "flag3", null) == "";
+                RunTest(testNum, "UndefinedTextMode.Key – mixed with regular entries",
+                    true, key2Ok && flag1Ok && flag3Ok, "both flags and normal entries work");
+            }
+
+            // Test 43: UndefinedTextMode.Value – bare words become values under empty key
+            testNum++;
+            {
+                string content = "value1";
+                var settings = new IniSettings
+                {
+                    UndefinedTextMode = IniUndefinedTextMode.Value,
+                    AllowMultiLine = false
+                };
+                var ini = IniFile.Load(new StringReader(content), settings);
+                string globalValue = ini.ReadString("", "", "NOVALUE");
+                bool valueOk = globalValue == "value1";
+                RunTest(testNum, "UndefinedTextMode.Value – bare word captured as value with empty key",
+                    true, valueOk, "value1 appears under global empty key");
+            }
+
+            // Test 44: UndefinedTextMode.Value – first value with empty key (DuplicateKeyOverride = false)
+            testNum++;
+            {
+                string content = "value1\nvalue2";
+                var settings = new IniSettings
+                {
+                    UndefinedTextMode = IniUndefinedTextMode.Value,
+                    AllowMultiLine = false
+                };
+                var ini = IniFile.Load(new StringReader(content), settings);
+                string firstVal = ini.ReadString("", "", null);
+                bool firstOk = firstVal == "value1";
+                RunTest(testNum, "UndefinedTextMode.Value – ReadString returns first value under empty key",
+                    true, firstOk, "first value wins under empty key");
+            }
+
+            // Test 45: UndefinedTextMode.Value – multiple values under empty key (ReadStrings)
+            testNum++;
+            {
+                string content = "value1\nvalue2";
+                var settings = new IniSettings
+                {
+                    UndefinedTextMode = IniUndefinedTextMode.Value,
+                    AllowMultiLine = false
+                };
+                var ini = IniFile.Load(new StringReader(content), settings);
+                string[] allVals = ini.ReadStrings("", "");
+                bool allOk = allVals.Length == 2 && allVals[0] == "value1" && allVals[1] == "value2";
+                RunTest(testNum, "UndefinedTextMode.Value – ReadStrings returns both values",
+                    true, allOk, "both values are preserved under empty key");
+            }
+
+            // Test 46: UndefinedTextMode.Key with AllowSpacesInKey
+            testNum++;
+            {
+                string content = "my flag\nkey = value";
+                var settings = new IniSettings
+                {
+                    UndefinedTextMode = IniUndefinedTextMode.Key,
+                    AllowMultiLine = false,
+                    AllowSpacesInKey = true
+                };
+                var ini = IniFile.Load(new StringReader(content), settings);
+                string[] keys = ini.ReadKeys();
+                bool hasSpacedFlag = keys.Contains("my flag");
+                bool normalKey = ini.ReadString("", "key", null) == "value";
+                RunTest(testNum, "UndefinedTextMode.Key with AllowSpacesInKey",
+                    true, hasSpacedFlag && normalKey, "space-containing flag captured as key");
+            }
+        }
+
+        // -------------------- Tests for DuplicateKeyOverride --------------------
+        private static void TestDuplicateKeyOverride(ref int testNum)
+        {
+            // Test 47: DuplicateKeyOverride = false – ReadString returns first value (classic behaviour)
+            testNum++;
+            {
+                string content = "key=first\nkey=second";
+                var settings = new IniSettings { DuplicateKeyOverride = false };
+                var ini = IniFile.Load(new StringReader(content), settings);
+                string val = ini.ReadString("", "key", "");
+                RunTest(testNum, "DuplicateKeyOverride=false – ReadString returns first value",
+                    "first", val, "first occurrence returned");
+            }
+
+            // Test 48: DuplicateKeyOverride = true – ReadString returns last value (override)
+            testNum++;
+            {
+                string content = "key=first\nkey=second";
+                var settings = new IniSettings { DuplicateKeyOverride = true };
+                var ini = IniFile.Load(new StringReader(content), settings);
+                string val = ini.ReadString("", "key", "");
+                RunTest(testNum, "DuplicateKeyOverride=true – ReadString returns last value",
+                    "second", val, "last occurrence returned (override)");
+            }
+
+            // Test 49: DuplicateKeyOverride does not affect ReadStrings (always returns all values)
+            testNum++;
+            {
+                string content = "key=first\nkey=second";
+                var settings = new IniSettings { DuplicateKeyOverride = true };
+                var ini = IniFile.Load(new StringReader(content), settings);
+                string[] vals = ini.ReadStrings("", "key");
+                string val = string.Join(',', vals);
+                bool ok = vals.Length == 2 && vals[0] == "first" && vals[1] == "second";
+                RunTest(testNum, "DuplicateKeyOverride does not affect ReadStrings",
+                    "first,second", val, "ReadStrings always returns all occurrences");
+            }
         }
 
         // -------------------- Test helpers --------------------
