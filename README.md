@@ -300,6 +300,76 @@ var settings = new IniSettings
 var ini = IniFile.Load("config.ini", settings);
 ```
 
+## Embedded Parser Settings (Directives)
+
+You can control parser behaviour directly from the INI file itself, without passing an `IniSettings` object in code. Settings are defined in the **global section** (entries outside any named section) using keys prefixed with `#`.
+
+### Advantages
+
+- The INI file becomes **self‑descriptive** – it carries its own parsing rules.
+- No need to specify `IniSettings` in code; useful when distributing configuration files across different environments.
+- But if you pass an explicit `IniSettings` object to the constructor, the embedded directives are **ignored** (code settings take precedence).
+
+### Syntax
+
+- **Boolean options** – just write the directive alone, e.g. `#space_in_key`. Presence means `true`, absence means `false`.
+- **Other options** – use `#directive = value`, e.g. `#comparison = ordinal`.
+
+### Supported Directives
+
+| Directive | Type | Allowed Values | Default |
+|-----------|------|----------------|---------|
+| `#comparison` | `StringComparison` | `current`, `currentignorecase`, `invariant`, `invariantignorecase`, `ordinal`, `ordinalignorecase` | `invariantignorecase` |
+| `#escape_chars` | `bool` | flag or `true`/`false` | `true` |
+| `#muli_line` | `bool` | flag or `true`/`false` | `true` |
+| `#space_in_key` | `bool` | flag or `true`/`false` | `false` |
+| `#inline_comment` | `bool` | flag or `true`/`false` | `true` |
+| `#dup_key_overrides` | `bool` | flag or `true`/`false` | `false` |
+| `#delimiter` | `IniDelimiterMode` | `equals`, `colon`, `both` | `both` |
+| `#comment` | `IniCommentMode` | `hash`, `semicolon`, `both` | `both` |
+| `#undef_text` | `IniUndefinedTextMode` | `ignore`, `key`, `value` | `ignore` |
+
+### Example
+
+```ini
+#comparison = ordinal
+#space_in_key
+#escape_chars = false
+
+; Normal application settings
+[General]
+AppName = MyApp
+Version = 1.0
+```
+
+Here:
+- `#comparison = ordinal` → case‑sensitive keys and sections.
+- `#space_in_key` → allows spaces in key names.
+- `#escape_chars = false` → disables escape‑sequence processing.
+
+```csharp
+// Load without explicit settings – directives are applied automatically.
+var ini = IniFile.Load("config.ini");
+
+// Because #comparison = ordinal, this will be case-sensitive.
+string appName = ini.ReadString("General", "AppName");  // works.
+string appNameLower = ini.ReadString("general", "appname"); // returns null.
+
+// #space_in_key is present, so keys with spaces are allowed.
+ini.WriteString(null, "My Key", "Some Value");
+```
+
+If you want to **override** the directives and use your own settings:
+
+```csharp
+var customSettings = new IniSettings
+{
+    Comparison = StringComparison.InvariantCultureIgnoreCase
+};
+// Directives from the file will be ignored.
+var ini = IniFile.Load("config.ini", customSettings);
+```
+
 ---
 
 ## Full API Reference
