@@ -208,7 +208,6 @@ Serialization Attributes
 - `this[string section, string key, string defaultValue]` — get with default value
 
 ---
----
 
 ## 4. Internal Mechanisms and Implementation Details
 
@@ -273,7 +272,6 @@ Serialization Attributes
 - Supports custom `TypeConverter` for user-defined types
 
 ---
----
 
 ## 5. Usage Examples
 
@@ -324,7 +322,6 @@ string[] all = ini.ReadStrings("Section", "Key"); // all values
 ```
 
 ---
----
 
 ## 6. Strengths and Limitations
 
@@ -342,7 +339,6 @@ string[] all = ini.ReadStrings("Section", "Key"); // all values
 - **Encoding** — auto-detection is heuristic and may be inaccurate
 
 ---
----
 
 ## 7. Recommended Use Cases
 
@@ -352,7 +348,6 @@ string[] all = ini.ReadStrings("Section", "Key"); // all values
 - For **embedding JSON** in INI files for complex structures
 - For **migrating** from classic INI parsers to a more flexible tool
 
----
 ---
 
 ## 8. Dependencies and Requirements
