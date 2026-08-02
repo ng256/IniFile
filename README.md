@@ -8,6 +8,8 @@ A single-file, dependency-free INI reader and editor that modifies configuration
 
 It provides a convenient API for reading, writing, and deleting values, as well as handling multi-line **JSON blocks** embedded in INI files. The library consists of a single source file and has no external dependencies. Drop one file into your project and edit INI files without destroying their formatting.
 
+See [Details](https://github.com/ng256/IniFile/blob/main/Details.md) document for more information.
+
 ---
 
 ## Key Features
