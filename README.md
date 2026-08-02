@@ -18,11 +18,13 @@ It provides a convenient API for reading, writing, and deleting values, as well 
 - **Global entries** – work with key‑value pairs outside any section by passing `null` or an empty string as the section name.
 - **Object serialization** – automatically map INI data to classes using attributes.
 - **Multi-line JSON blocks** – read and write JSON blocks that may span multiple lines and include comments before the block. Work with JSON as raw strings or as dynamic objects.
+- **Flexible handling of unrecognised text** – treat otherwise unparseable lines as undefined, as keys with empty values (flags), or as values with empty keys (line continuations).
+- **Duplicate key control** – choose whether reading a duplicated key returns the first occurrence or the last (override mode).
 - **Preserve formatting** – changes modify only the necessary parts, leaving the rest of the file intact.
 - **Static helper methods** – quick one‑liners for reading/writing a single value without creating an instance.
 - **Escape characters** – optional support for `\n`, `\t`, etc.
 - **Auto‑detection** of line endings and encoding.
-- **Flexible configuration** – centralised settings via `IniSettings` class (delimiters, comment characters, case sensitivity, etc.).
+- **Flexible configuration** – centralised settings via `IniSettings` class (delimiters, comment characters, case sensitivity, undefined text mode, duplicate key override, etc.).
 
 ---
 
@@ -52,7 +54,7 @@ ini = IniFile.LoadOrCreate("config.ini");
 ini.Save("config.ini");
 ```
 
-You can customize the parser behavior by passing an `IniSettings` object. The settings control string comparison, escape character processing, multiline support, allowed delimiters, comment styles, and whether spaces are permitted in key names.
+You can customize the parser behavior by passing an `IniSettings` object. The settings control string comparison, escape character processing, multiline support, allowed delimiters, comment styles, handling of spaces in keys, interpretation of unrecognised text, and duplicate key behaviour.
 
 ```csharp
 using System.Text;
@@ -66,7 +68,9 @@ var settings = new IniSettings
     AllowMultiLine = true,
     Delimiters = IniDelimiterMode.Equals,      // only '='
     Comments = IniCommentMode.Hash,            // only '#'
-    AllowSpacesInKey = true
+    AllowSpacesInKey = true,
+    UndefinedTextMode = IniUndefinedTextMode.Key,  // bare words become flags
+    DuplicateKeyOverride = true                     // last value wins on duplicates
 };
 
 // Load with custom settings.
@@ -273,9 +277,11 @@ All parser behaviour is centralised in the `IniSettings` class. It allows you to
 | `Comparison` | `StringComparison` | Case sensitivity and culture rules (default: `InvariantCultureIgnoreCase`). |
 | `AllowEscapeChars` | `bool` | If `true`, escape sequences like `\n` and `\t` are unescaped in values (default: `true`). |
 | `AllowMultiLine` | `bool` | If `true`, values wrapped in `{ ... }` can span multiple lines (default: `true`). |
+| `AllowSpacesInKey` | `bool` | If `true`, key names may contain spaces (default: `false`). |
+| `DuplicateKeyOverride` | `bool` | If `true`, reading a duplicated key returns the last value (override mode); if `false` (default), returns the first. Does not affect `ReadStrings`. |
 | `Delimiters` | `IniDelimiterMode` | Allowed delimiters: `Equals`, `Colon`, `Both` (default: `Both`). |
 | `Comments` | `IniCommentMode` | Allowed comment characters: `Hash`, `Semicolon`, `Both` (default: `Both`). |
-| `AllowSpacesInKey` | `bool` | If `true`, key names may contain spaces (default: `false`). |
+| `UndefinedTextMode` | `IniUndefinedTextMode` | How to interpret unrecognised text: `Undefined` (keep as undefined), `Key` (treat as key with empty value, i.e. flags), `Value` (treat as value with empty key). |
 
 The `IniSettings.Default` property provides a preconfigured instance with the default settings, which you can use as a base for customisation.
 
@@ -287,7 +293,9 @@ var settings = new IniSettings
     Comparison = StringComparison.Ordinal,
     Delimiters = IniDelimiterMode.Equals,
     Comments = IniCommentMode.Hash,
-    AllowSpacesInKey = false
+    AllowSpacesInKey = false,
+    UndefinedTextMode = IniUndefinedTextMode.Key,   // bare words become flags
+    DuplicateKeyOverride = true                      // last value wins
 };
 var ini = IniFile.Load("config.ini", settings);
 ```
@@ -407,3 +415,4 @@ The result is a flexible INI editor that can handle different file variations, i
 ## License
 
 MIT License © 2024 Pavel Bashkardin. See [License](https://github.com/ng256/IniFile/blob/main/LICENSE) file for details.
+```
