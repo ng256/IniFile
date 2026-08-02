@@ -17,7 +17,7 @@ It provides a convenient API for reading, writing, and deleting values, as well 
 - **Deletion** – remove a single key, all keys with the same name, or entire sections.
 - **Global entries** – work with key‑value pairs outside any section by passing `null` or an empty string as the section name.
 - **Object serialization** – automatically map INI data to classes using attributes.
-- **Multi-line JSON blocks** – read and write JSON blocks that may span multiple lines and include comments before the block. Work with JSON as raw strings or as dynamic objects.
+- **Multi-line JSON blocks** – read and write JSON blocks that may span multiple lines and include C-like comments. Work with JSON as raw strings or as dynamic objects.
 - **Flexible handling of unrecognised text** – treat otherwise unparseable lines as undefined, as keys with empty values (flags), or as values with empty keys (line continuations).
 - **Duplicate key control** – choose whether reading a duplicated key returns the first occurrence or the last (override mode).
 - **Preserve formatting** – changes modify only the necessary parts, leaving the rest of the file intact.
