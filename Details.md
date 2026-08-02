@@ -380,7 +380,15 @@ string[] all = ini.ReadStrings("Section", "Key"); // all values
 ### Limitations:
 - **Regular Expressions** — parsing depends on pattern complexity, but they are optimized
 - **Memory** — the entire file is loaded into memory (not streamed)
-- **.NET Framework** — requires .NET, not cross-platform on older versions
+- **.NET Framework** — requires .NET, not cross-platform on older versions. The library is written for .NET Standard 2.0, which ensures compatibility with:
+  - .NET Core 2.0+,
+  - .NET 5+,
+  - .NET Framework 4.6.1+,
+  - Mono 5.4+,
+  - Xamarin.iOS / Xamarin.Android,
+  - UWP and other implementations that support .NET Standard 2.0.
+
+It is not tied to Windows and works on Linux, macOS, and any other systems that support .NET Standard 2.0. However, .NET Framework versions lower than 4.6.1 do not support .NET Standard 2.0, so the library will not work on such outdated platforms. This limitation only applies to older versions of the . NET Framework and is not a problem for modern projects that can be deployed on any operating system.
 - **Encoding** — auto-detection is heuristic and may be inaccurate
 
 ---
