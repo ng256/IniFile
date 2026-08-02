@@ -30,13 +30,40 @@ See [Details](https://github.com/ng256/IniFile/blob/main/Details.md) document fo
 
 ---
 
+## Contents.  
+
+1. [Installation](#installation)
+2. [Usage](#usage)
+    - [Loading and Saving](#loading-and-saving)
+    - [Reading and Writing Simple Values](#reading-and-writing-simple-values)
+    - [Working with Multiple Values (Arrays)](#working-with-multiple-values-arrays)
+    - [Deleting Entries](#deleting-entries)
+3. [JSON Support](#json-support)
+    - [Read/Write JSON as Raw String](#readwrite-json-as-raw-string)
+    - [Read/Write JSON as Object](#readwrite-json-as-object)
+4. [Object Serialization with Attributes](#object-serialization-with-attributes)
+5. [Static Helper Methods](#static-helper-methods)
+6. [Configuration with `IniSettings`](#configuration-with-inisettings)
+    - [Settings Overview](#settings-overview)
+    - [Example](#example-1)
+7. [Embedded Parser Settings (Directives)](#embedded-parser-settings-directives)
+    - [Advantages](#advantages)
+    - [Syntax](#syntax)
+    - [Supported Directives](#supported-directives)
+8. [Full API Reference](#full-api-reference)
+9. [Background](#background)
+    - [INI File Format](#ini-file-format)
+    - [Regular Expression](#regular-expression)
+    - [C# Implementation](#c-implementation)
+10. [License](#license)
+
 ## Installation
 
 Simply add `IniFile.cs` to your project and start using it. No external dependencies.
 
 ---
 
-## Quick Start
+## Usage
 
 ### Loading and Saving
 
