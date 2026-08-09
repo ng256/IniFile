@@ -3032,23 +3032,32 @@ namespace System.Ini
         private static Encoding AutoDetectEncoding(string fileName, Encoding defaultEncoding = null)
         {
             const int SampleSize = 4096;
-
             byte[] buffer = new byte[SampleSize];
+            int totalRead = 0;
 
-            int count;
             using (FileStream fs = File.OpenRead(fileName))
             {
-                count = fs.Read(buffer, 0, buffer.Length);
+                // Read until the buffer is full or EOF is reached.
+                while (totalRead < SampleSize)
+                {
+                    int bytesRead = fs.Read(buffer, totalRead, SampleSize - totalRead);
+                    if (bytesRead == 0)
+                        break;
+                    totalRead += bytesRead;
+                }
             }
 
+            int count = totalRead;
+
+            // ----- BOM detection (most reliable) -----
             if (count >= 4)
             {
-                // UTF-32 BE
+                // UTF‑32 Big Endian
                 if (buffer[0] == 0x00 && buffer[1] == 0x00 &&
                     buffer[2] == 0xFE && buffer[3] == 0xFF)
                     return Encoding.GetEncoding("utf-32BE");
 
-                // UTF-32 LE
+                // UTF‑32 Little Endian
                 if (buffer[0] == 0xFF && buffer[1] == 0xFE &&
                     buffer[2] == 0x00 && buffer[3] == 0x00)
                     return Encoding.UTF32;
@@ -3056,66 +3065,53 @@ namespace System.Ini
 
             if (count >= 3)
             {
-                // UTF-8
-                if (buffer[0] == 0xEF &&
-                    buffer[1] == 0xBB &&
-                    buffer[2] == 0xBF)
+                // UTF‑8 BOM
+                if (buffer[0] == 0xEF && buffer[1] == 0xBB && buffer[2] == 0xBF)
                     return Encoding.UTF8;
 
-#pragma warning disable SYSLIB0001
-                // UTF-7
-                if (buffer[0] == 0x2B &&
-                    buffer[1] == 0x2F &&
-                    buffer[2] == 0x76)
+#pragma warning disable SYSLIB0001 // UTF‑7 is obsolete
+                // UTF‑7 BOM (rare, but kept for legacy)
+                if (buffer[0] == 0x2B && buffer[1] == 0x2F && buffer[2] == 0x76)
                     return Encoding.UTF7;
 #pragma warning restore SYSLIB0001
             }
 
             if (count >= 2)
             {
-                // UTF-16 LE
-                if (buffer[0] == 0xFF &&
-                    buffer[1] == 0xFE)
+                // UTF‑16 Little Endian
+                if (buffer[0] == 0xFF && buffer[1] == 0xFE)
                     return Encoding.Unicode;
 
-                // UTF-16 BE
-                if (buffer[0] == 0xFE &&
-                    buffer[1] == 0xFF)
+                // UTF‑16 Big Endian
+                if (buffer[0] == 0xFE && buffer[1] == 0xFF)
                     return Encoding.BigEndianUnicode;
             }
 
-            // UTF-16 heuristic.
-            int evenZero = 0;
-            int oddZero = 0;
-
+            // ----- UTF‑16 heuristic: count zero bytes in even/odd positions -----
+            int evenZero = 0, oddZero = 0;
             for (int i = 0; i + 1 < count; i += 2)
             {
-                if (buffer[i] == 0)
-                    evenZero++;
-
-                if (buffer[i + 1] == 0)
-                    oddZero++;
+                if (buffer[i] == 0) evenZero++;
+                if (buffer[i + 1] == 0) oddZero++;
             }
 
             int pairs = count / 2;
-
             if (pairs > 8)
             {
                 if (oddZero > pairs * 8 / 10)
-                    return Encoding.Unicode;
-
+                    return Encoding.Unicode;          // LE
                 if (evenZero > pairs * 8 / 10)
-                    return Encoding.BigEndianUnicode;
+                    return Encoding.BigEndianUnicode; // BE
             }
 
-            // UTF-8 heuristic.
+            // ----- UTF‑8 heuristic (no BOM) -----
             if (IsUtf8(buffer, count))
                 return Encoding.UTF8;
 
-            // Default fallback.
+            // ----- Fallback -----
             return defaultEncoding ?? Encoding.Default;
         }
-
+        // Determines whether the given byte buffer contains valid UTF‑8 and includes at least one multibyte character.
         private static bool IsUtf8(byte[] buffer, int count)
         {
             bool hasMultibyte = false;
@@ -3124,6 +3120,7 @@ namespace System.Ini
             {
                 byte b = buffer[i];
 
+                // ASCII: single byte, valid UTF‑8.
                 if (b <= 0x7F)
                 {
                     i++;
@@ -3131,49 +3128,70 @@ namespace System.Ini
                 }
 
                 int remaining;
+                byte minContinuation = 0x80;
+                byte maxContinuation = 0xBF;
 
+                // 2‑byte sequence: C2..DF 80..BF
                 if ((b & 0xE0) == 0xC0)
                 {
                     remaining = 1;
-
+                    // C0 and C1 are overlong for ASCII.
                     if (b < 0xC2)
                         return false;
                 }
+                // 3‑byte sequence: E0..EF 80..BF 80..BF
                 else if ((b & 0xF0) == 0xE0)
                 {
                     remaining = 2;
+                    // E0 A0..BF to avoid overlong; ED 80..9F to avoid surrogates.
+                    if (b == 0xE0)
+                        minContinuation = 0xA0;
+                    else if (b == 0xED)
+                        maxContinuation = 0x9F;
                 }
+                // 4‑byte sequence: F0..F4 80..BF 80..BF 80..BF
                 else if ((b & 0xF8) == 0xF0)
                 {
                     remaining = 3;
-
-                    if (b > 0xF4)
+                    // F0 90..BF to avoid overlong; F4 80..8F to stay within U+10FFFF.
+                    if (b == 0xF0)
+                        minContinuation = 0x90;
+                    else if (b == 0xF4)
+                        maxContinuation = 0x8F;
+                    else if (b > 0xF4)
                         return false;
                 }
                 else
                 {
+                    // Invalid leading byte.
                     return false;
                 }
 
+                // If the sequence is cut off at the end of the sample, treat it as
+                // a boundary issue and ignore it (provided we already saw a complete
+                // multibyte sequence elsewhere).
                 if (i + remaining >= count)
+                    return hasMultibyte;
+
+                // Validate the first continuation byte with the special range.
+                byte cont = buffer[i + 1];
+                if (cont < minContinuation || cont > maxContinuation)
                     return false;
 
-                while (remaining-- > 0)
+                // Remaining continuation bytes (if any) must be 10xxxxxx.
+                for (int j = 2; j <= remaining; j++)
                 {
-                    i++;
-
-                    if ((buffer[i] & 0xC0) != 0x80)
+                    if ((buffer[i + j] & 0xC0) != 0x80)
                         return false;
                 }
 
                 hasMultibyte = true;
-                i++;
+                i += remaining + 1;
             }
 
             return hasMultibyte;
         }
-
-
+        
         // Normalizes the string case according to the specified comparison mode.
         private static string NormalizeString(string text, StringComparison comparison)
         {
