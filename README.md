@@ -124,20 +124,21 @@ Network = localhost
 Port = 8080
 
 [Environment]
-LogDirectory = /var/log/myapp
+; Surrounding quotes are removed
+LogDirectory = "/var/log/myapp"
 
-; Multiline shell script
-Script =
-{
+; Multiline shell script preserve whitespace, comments, and line breaks
+Script = "
+
 #!/bin/sh
 
-echo "Starting..."
+echo \"Starting...\"
 
 mkdir -p /var/cache/myapp
 cp -r /opt/data/* /var/cache/myapp/
 
-echo "Done."
-}
+echo \"Done.\"
+"
 
 [SearchPaths]
 ; Duplicate keys are supported
