@@ -61,13 +61,6 @@ namespace TestIni
 
         static void Main(string[] args)
         {
-            var settings = new IniSettings() { UndefinedTextMode = IniUndefinedTextMode.Value };
-            var ini = IniFile.Load("temp.ini", settings);
-            //var key = ini.ReadKeys();
-            //var value = ini.ReadString(null, "");
-            var map = ini.ExportToDictionary();
-
-
             Run(args);
         }
 
@@ -234,6 +227,34 @@ json_with_unbalanced_brace_comments =
 key_with_colon : value with colon
 json_colon : {""test"":""colon""}
 another_colon_key : 123
+[Section14]
+; Quoted values - double quotes
+double_quoted = ""hello world""
+double_quoted_multiline = ""line1
+line2
+line3""
+double_quoted_with_escaped = ""escaped \"" quote inside""
+double_quoted_with_trailing_comment = ""value"" ; this is a comment
+
+[Section15]
+; Quoted values - single quotes
+single_quoted = 'hello world'
+single_quoted_multiline = 'line1
+line2
+line3'
+single_quoted_with_escaped = 'escaped \' quote inside'
+single_quoted_with_trailing_comment = 'value' ; this is a comment
+
+[Section16]
+; Quoted values mixed with other value types
+plain = plain_value
+quoted_priority = ""quoted value""
+braced = { ""json"": true }
+quoted_braced = ""{ \""json\"": false }"" ; quoted string, not a JSON object
+
+[Section17]
+; Quoted values with AllowQuotedValues = false (will be tested separately)
+unquoted = ""this should be read as literal including quotes""
 ";
         }
 
@@ -260,7 +281,7 @@ another_colon_key : 123
 
             // Test 1: ReadSections
             testNum++;
-            string[] expectedSections = { "section1", "section2", "section3", "section4", "section5", "section6", "section7", "section8", "section9", "section10", "section11", "section12", "section13" };
+            string[] expectedSections = { "section1", "section2", "section3", "section4", "section5", "section6", "section7", "section8", "section9", "section10", "section11", "section12", "section13", "section14", "section15", "section16", "section17" };
             string[] actualSections = ini.ReadSections();
             RunTest(testNum, "ReadSections", expectedSections, actualSections, "List of sections");
 
@@ -591,6 +612,7 @@ another_colon_key : 123
 
             TestUndefinedTextModes(ref testNum);
             TestDuplicateKeyOverride(ref testNum);
+            TestQuotedValues(ref testNum, ini);
         }
 
         private static void TestJustify(int testNum)
@@ -648,7 +670,7 @@ key1=multi2
                 string content = "flag1\nflag2";
                 var settings = new IniSettings
                 {
-                    UndefinedTextMode = IniUndefinedTextMode.Key,
+                    UndefinedText = IniUndefinedTextMode.Key,
                     AllowMultiLine = false,
                     Delimiters = IniDelimiterMode.Both,
                     Comments = IniCommentMode.Both,
@@ -670,7 +692,7 @@ key1=multi2
                 string content = "flag1\nkey2=val2\nflag3";
                 var settings = new IniSettings
                 {
-                    UndefinedTextMode = IniUndefinedTextMode.Key,
+                    UndefinedText = IniUndefinedTextMode.Key,
                     AllowMultiLine = false
                 };
                 var ini = IniFile.Load(new StringReader(content), settings);
@@ -687,7 +709,7 @@ key1=multi2
                 string content = "value1";
                 var settings = new IniSettings
                 {
-                    UndefinedTextMode = IniUndefinedTextMode.Value,
+                    UndefinedText = IniUndefinedTextMode.Value,
                     AllowMultiLine = false
                 };
                 var ini = IniFile.Load(new StringReader(content), settings);
@@ -703,7 +725,7 @@ key1=multi2
                 string content = "value1\nvalue2";
                 var settings = new IniSettings
                 {
-                    UndefinedTextMode = IniUndefinedTextMode.Value,
+                    UndefinedText = IniUndefinedTextMode.Value,
                     AllowMultiLine = false
                 };
                 var ini = IniFile.Load(new StringReader(content), settings);
@@ -719,7 +741,7 @@ key1=multi2
                 string content = "value1\nvalue2";
                 var settings = new IniSettings
                 {
-                    UndefinedTextMode = IniUndefinedTextMode.Value,
+                    UndefinedText = IniUndefinedTextMode.Value,
                     AllowMultiLine = false
                 };
                 var ini = IniFile.Load(new StringReader(content), settings);
@@ -735,7 +757,7 @@ key1=multi2
                 string content = "my flag\nkey = value";
                 var settings = new IniSettings
                 {
-                    UndefinedTextMode = IniUndefinedTextMode.Key,
+                    UndefinedText = IniUndefinedTextMode.Key,
                     AllowMultiLine = false,
                     AllowSpacesInKey = true
                 };
@@ -784,6 +806,89 @@ key1=multi2
                 bool ok = vals.Length == 2 && vals[0] == "first" && vals[1] == "second";
                 RunTest(testNum, "DuplicateKeyOverride does not affect ReadStrings",
                     "first,second", val, "ReadStrings always returns all occurrences");
+            }
+        }
+
+        // -------------------- QUOTED VALUE TESTS (50–61) --------------------
+        private static void TestQuotedValues(ref int testNum, IniFile ini)
+        {
+
+            // Test 50: ReadString with double-quoted single-line value
+            testNum++;
+            string dqSingle = ini.ReadString("Section14", "double_quoted", "default");
+            RunTest(testNum, "ReadString (double-quoted single-line)", "hello world", dqSingle, "double-quoted value");
+
+            // Test 51: ReadString with double-quoted multi-line value
+            testNum++;
+            string dqMulti = ini.ReadString("Section14", "double_quoted_multiline", "default");
+            string expectedMulti = "line1\nline2\nline3";
+            expectedMulti = expectedMulti.Replace("\r\n", "\n").Replace("\r", "\n");
+            dqMulti = dqMulti?.Replace("\r\n", "\n").Replace("\r", "\n");
+            RunTest(testNum, "ReadString (double-quoted multi-line)", expectedMulti, dqMulti, "multi-line double-quoted value");
+
+            // Test 52: ReadString with double-quoted and escaped quote
+            testNum++;
+            string dqEscaped = ini.ReadString("Section14", "double_quoted_with_escaped", "default");
+            RunTest(testNum, "ReadString (double-quoted with escaped quote)", "escaped \" quote inside", dqEscaped, "escaped double quote inside value");
+
+            // Test 53: ReadString with double-quoted and trailing comment
+            testNum++;
+            string dqTrailing = ini.ReadString("Section14", "double_quoted_with_trailing_comment", "default");
+            RunTest(testNum, "ReadString (double-quoted with trailing comment)", "value", dqTrailing, "comment after closing quote ignored");
+
+            // Test 54: ReadString with single-quoted single-line value
+            testNum++;
+            string sqSingle = ini.ReadString("Section15", "single_quoted", "default");
+            RunTest(testNum, "ReadString (single-quoted single-line)", "hello world", sqSingle, "single-quoted value");
+
+            // Test 55: ReadString with single-quoted multi-line value
+            testNum++;
+            string sqMulti = ini.ReadString("Section15", "single_quoted_multiline", "default");
+            string expectedSqMulti = "line1\nline2\nline3";
+            expectedSqMulti = expectedSqMulti.Replace("\r\n", "\n").Replace("\r", "\n");
+            sqMulti = sqMulti?.Replace("\r\n", "\n").Replace("\r", "\n");
+            RunTest(testNum, "ReadString (single-quoted multi-line)", expectedSqMulti, sqMulti, "multi-line single-quoted value");
+
+            // Test 56: ReadString with single-quoted and escaped quote
+            testNum++;
+            string sqEscaped = ini.ReadString("Section15", "single_quoted_with_escaped", "default");
+            RunTest(testNum, "ReadString (single-quoted with escaped quote)", "escaped ' quote inside", sqEscaped, "escaped single quote inside value");
+
+            // Test 57: ReadString with single-quoted and trailing comment
+            testNum++;
+            string sqTrailing = ini.ReadString("Section15", "single_quoted_with_trailing_comment", "default");
+            RunTest(testNum, "ReadString (single-quoted with trailing comment)", "value", sqTrailing, "comment after closing quote ignored");
+
+            // Test 58: Priority – quoted value takes precedence over plain value
+            testNum++;
+            string plain = ini.ReadString("Section16", "plain", "default");
+            RunTest(testNum, "ReadString (plain value)", "plain_value", plain, "ordinary key=value");
+
+            string quotedPriority = ini.ReadString("Section16", "quoted_priority", "default");
+            RunTest(testNum, "ReadString (quoted priority over plain)", "quoted value", quotedPriority, "quoted value is read correctly");
+
+            // Test 59: Priority – quoted value takes precedence over braced object
+            testNum++;
+            string braced = ini.ReadString("Section16", "braced", "default");
+            string expectedBraced = "{ \"json\": true }";
+            RunTest(testNum, "ReadString (braced object)", expectedBraced, braced, "object in braces");
+
+            string quotedBraced = ini.ReadString("Section16", "quoted_braced", "default");
+            RunTest(testNum, "ReadString (quoted value over braced)", "{ \"json\": false }", quotedBraced, "quoted string takes priority over braced object");
+
+            // Test 60: ReadJsonString on a quoted value – should return raw string, not parse JSON
+            testNum++;
+            string jsonFromQuoted = ini.ReadJsonString("Section16", "quoted_braced", "default");
+            RunTest(testNum, "ReadJsonString on quoted value", "{ \\\"json\\\": false }", jsonFromQuoted, "quoted value returned as raw string (not parsed as JSON)");
+
+            // Test 61: AllowQuotedValues = false – quotes are treated as literal characters
+            testNum++;
+            {
+                string content = "[Test]\nkey = \"literal quotes\"\n";
+                var settings = new IniSettings { AllowQuotedValues = false };
+                var ini2 = IniFile.Load(new StringReader(content), settings);
+                string val = ini2.ReadString("Test", "key", "default");
+                RunTest(testNum, "AllowQuotedValues=false", "\"literal quotes\"", val, "quotes are part of the value");
             }
         }
 
