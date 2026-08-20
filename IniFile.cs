@@ -52,6 +52,7 @@ using System.Reflection;
 using System.Diagnostics;
 using System.Collections;
 using System.Dynamic;
+using static System.Net.Mime.MediaTypeNames;
 
 #nullable disable
 
@@ -146,6 +147,15 @@ namespace System.Ini
         public bool AllowMultiLine { get; set; } = true;
 
         /// <summary>
+        /// Whether values can be enclosed in double or single quotes to preserve whitespace and line breaks.
+        /// When <c>true</c>, values starting with a quote are read until the matching unescaped quote,
+        /// allowing multi-line values and preserving spaces and comments after the closing quote.
+        /// </summary>
+        [IniEntry("#quoted_values")]
+        public bool AllowQuotedValues { get; set; } = true;
+
+
+        /// <summary>
         /// Whether spaces are allowed within key names.
         /// </summary>
         [IniEntry("#space_in_key")]
@@ -198,6 +208,7 @@ namespace System.Ini
         /// <param name="comparison">String comparison rules.</param>
         /// <param name="allowEscapeChars">Whether escape sequences are processed.</param>
         /// <param name="allowMultiLine">Whether multiline values are supported.</param>
+        /// <param name="allowQuotedValues">Whether quoted values are supported.</param>
         /// <param name="allowSpacesInKey">Whether spaces are allowed in key names.</param>
         /// <param name="allowInlineComments">Whether comments are allowed after values on the same line.</param>
         /// <param name="delimiters">Allowed delimiter characters.</param>
@@ -211,6 +222,7 @@ namespace System.Ini
             StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
             bool allowEscapeChars = true,
             bool allowMultiLine = true,
+            bool allowQuotedValues = true,
             bool allowSpacesInKey = false,
             bool allowInlineComments = true,
             bool duplicateKeyOverride = false,
@@ -223,6 +235,7 @@ namespace System.Ini
             Comparison = comparison;
             AllowEscapeChars = allowEscapeChars;
             AllowMultiLine = allowMultiLine;
+            AllowQuotedValues = allowQuotedValues;
             DuplicateKeyOverride = duplicateKeyOverride;
             Delimiters = delimiters;
             Comments = comments;
@@ -368,26 +381,77 @@ namespace System.Ini
             }
         }
 
-        // Value pattern (plain or multiline object).
+        // Value pattern (plain, quoted, or multiline object).
         private string BuildValuePattern()
         {
-            // Determine comment characters for the exclusion class.
             string commentChars = BuildCommentCharacters();
-            string exclude = AllowInlineComments ? @"[^\r\n]*" : $@"[^{commentChars}\r\n]*";
+            string exclude = AllowInlineComments
+                ? @"[^\r\n]*"
+                : $@"[^{commentChars}\r\n]*";
 
+            string quotedPattern = null;
+
+            if (AllowQuotedValues)
+            {
+                // Build the quoted value pattern with correct escaping and multi-line support.
+                // The pattern ensures:
+                //   - Leading whitespace is consumed before the opening quote.
+                //   - The opening quote (single or double) is captured in group 'quoted'.
+                //   - The content (without quotes) is captured in group 'value'.
+                //   - Escaped sequences (e.g. \", \\, \n) are consumed atomically.
+                //   - The closing quote must match the opening quote and must not be escaped.
+                if (AllowMultiLine)
+                {
+                    // Multi-line: allow any character inside, including newlines.
+                    quotedPattern =
+                        @"(?<quoted>[""'])" +
+                        @"(?<value>(?:\\[\s\S]|(?!\k<quoted>)[\s\S])*)" +
+                        @"\k<quoted>";
+                }
+                else
+                {
+                    // Single-line: forbid newlines inside.
+                    quotedPattern =
+                        @"(?<quoted>[""'])" +
+                        @"(?<value>(?:\\[^\r\n]|(?!\k<quoted>)[^\r\n])*)" +
+                        @"\k<quoted>";
+                }
+            }
 
             if (AllowMultiLine)
             {
-                // Multiline: two alternatives.
-                // 1. Optional horizontal whitespace, then a balanced JSON‑like object (captured as 'value').
-                // 2. Optional horizontal whitespace, then any text except comment chars or line breaks.
                 string obj = BuildObjectPattern();
-                return $@"(?:\s*(?<value>{obj})|((?:[^\S\r\n]*)(?<value>{exclude})))";
+
+                if (quotedPattern != null)
+                {
+                    // Priority: quoted → braced object → plain text.
+                    return
+                        $@"(?:" +
+                            $@"[^\S\r\n]*{quotedPattern}" +     // quoted value (with optional leading spaces)
+                            $@"|\s*(?<value>{obj})" +           // braced JSON-like object
+                            $@"|[^\S\r\n]*(?<value>{exclude})" + // plain text
+                        $@")";
+                }
+
+                return
+                    $@"(?:" +
+                        $@"\s*(?<value>{obj})" +
+                        $@"|[^\S\r\n]*(?<value>{exclude})" +
+                    $@")";
             }
             else
             {
-                // Single‑line: optional horizontal whitespace, then any text except comment chars or line breaks.
-                return $@"(?:[^\S\r\n]*)(?<value>{exclude})";
+                if (quotedPattern != null)
+                {
+                    return
+                        $@"(?:" +
+                            $@"[^\S\r\n]*{quotedPattern}" +     // quoted value (with optional leading spaces)
+                            $@"|[^\S\r\n]*(?<value>{exclude})" + // plain text
+                        $@")";
+                }
+
+                return
+                    $@"[^\S\r\n]*(?<value>{exclude})";
             }
         }
 
@@ -1322,7 +1386,7 @@ namespace System.Ini
         }
 
         // Method to get a value from a specific section and key, with an optional default value.
-        private string GetValue(string section, string key, string defaultValue = null, bool unwrap = true)
+        private string GetValue(string section, string key, string defaultValue = null)
         {
             string value = defaultValue;
             bool emptySection = string.IsNullOrEmpty(section);
@@ -1350,13 +1414,6 @@ namespace System.Ini
 
                     value = match.Groups[_groupValue].Value;
 
-                    // Apply unwrapping and unescaping only for regular INI values (not JSON).
-                    if (unwrap)
-                    {
-                        if (_allowMultiLine) value = UnWrap(value);
-                        if (_allowEscapeChars) value = UnEscape(value);
-                    }
-
                     // If override mode is off, return the first match immediately.
                     // Otherwise keep scanning...
                     if (!_allowOverrides) return value;
@@ -1367,7 +1424,7 @@ namespace System.Ini
         }
 
         // Method to get all values in a specific section.
-        private IEnumerable<string> GetValues(string section, bool unwrap = true)
+        private IEnumerable<string> GetValues(string section)
         {
             List<string> values = new List<string>(DefaultCapacity);
             bool emptySection = string.IsNullOrEmpty(section);
@@ -1390,12 +1447,7 @@ namespace System.Ini
                 if (inSection && match.Groups[_groupEntry].Success)
                 {
                     string value = match.Groups[_groupValue].Value;
-
-                    if (unwrap)
-                    {
-                        if (_allowMultiLine) value = UnWrap(value);
-                        if (_allowEscapeChars) value = UnEscape(value);
-                    }
+                    if (_allowEscapeChars) value = UnEscape(value);
 
                     values.Add(value);
                 }
@@ -1405,7 +1457,7 @@ namespace System.Ini
         }
 
         // Method to get all values associated with a specific key in a section.
-        private IEnumerable<string> GetValues(string section, string key, bool unwrap = true)
+        private IEnumerable<string> GetValues(string section, string key)
         {
             // If the key is empty, return all the values in the section.
             if (string.IsNullOrEmpty(key)) return GetValues(section);
@@ -1435,12 +1487,7 @@ namespace System.Ini
                         continue;
 
                     string value = match.Groups[_groupValue].Value;
-
-                    if (unwrap)
-                    {
-                        if (_allowMultiLine) value = UnWrap(value);
-                        if (_allowEscapeChars) value = UnEscape(value);
-                    }
+                    if (_allowEscapeChars) value = UnEscape(value);
 
                     values.Add(value);
                 }
@@ -2637,79 +2684,65 @@ namespace System.Ini
         }
 
         // Converts escaped characters in the input string.
-        private static string UnEscape(string text)
+        private static string UnEscape(string value)
         {
-            int pos = -1;
-            int inputLength = text.Length;
+            if (string.IsNullOrEmpty(value)) return value;
 
-            if (inputLength == 0) return text;
+            int pos = -1;
+            int inputLength = value.Length;
+
+            if (inputLength == 0) return value;
 
             // Find the first backslash or return the original text without allocating.
             for (int i = 0; i < inputLength; ++i)
             {
-                if (text[i] == '\\')
+                if (value[i] == '\\')
                 {
                     pos = i;
                     break;
                 }
             }
 
-            if (pos < 0) return text; // No backslash found.
+            if (pos < 0) return value; // No backslash found.
 
             // Copy the unchanged prefix preceding the first escape sequence.
             StringBuilder sb = new StringBuilder(inputLength);
-            sb.Append(text, 0, pos);
+            sb.Append(value, 0, pos);
 
             do
             {
-                char c = text[pos++];
+                char c = value[pos++];
                 if (c == '\\')
                 {
                     // Read the escape sequence following the backslash.
                     // If the backslash is the last character, keep it unchanged.
-                    c = pos < inputLength ? text[pos] : '\\';
+                    c = pos < inputLength ? value[pos] : '\\';
                     switch (c)
                     {
-                        case '\\':
-                            c = '\\';
-                            break;
-                        case '0':
-                            c = '\0';
-                            break;
-                        case 'a':
-                            c = '\a';
-                            break;
-                        case 'b':
-                            c = '\b';
-                            break;
-                        case 'n':
-                            c = '\n';
-                            break;
-                        case 'r':
-                            c = '\r';
-                            break;
-                        case 'f':
-                            c = '\f';
-                            break;
-                        case 't':
-                            c = '\t';
-                            break;
-                        case 'v':
-                            c = '\v';
-                            break;
+                        case '\\': c = '\\'; break;
+                        case '0': c = '\0'; break;
+                        case 'a': c = '\a'; break;
+                        case 'b': c = '\b'; break;
+                        case 'n': c = '\n'; break;
+                        case 'r': c = '\r'; break;
+                        case 'f': c = '\f'; break;
+                        case 't': c = '\t'; break;
+                        case 'v': c = '\v'; break;
+                        case '"': c = '"'; break;
+                        case '\'': c = '\''; break;
                         // Unicode escape: \uXXXX
                         case 'u' when pos < inputLength - 3:
-                            c = UnHex(text, ++pos, 4);
+                            c = UnHex(value, ++pos, 4);
                             pos += 3;
                             break;
                         // Hex escape: \xXX
                         case 'x' when pos < inputLength - 1:
-                            c = UnHex(text, ++pos, 2);
+                            c = UnHex(value, ++pos, 2);
                             pos++;
                             break;
                         // Control character escape: \cA .. \cZ
                         case 'c' when pos < inputLength:
-                            c = text[++pos];
+                            c = value[++pos];
                             if (c >= 'a' && c <= 'z')
                                 c -= ' ';
                             if ((c = (char)(c - 0x40U)) >= ' ')
@@ -2736,7 +2769,7 @@ namespace System.Ini
         // Converts special characters in the input string to escaped sequences.
         private static string ToEscape(string value)
         {
-            if (value == null) return null;
+            if (string.IsNullOrEmpty(value)) return null;
 
             int pos = 0;
             int inputLength = value.Length;
@@ -2751,33 +2784,17 @@ namespace System.Ini
 
                 switch (c)
                 {
-                    case '\\':
-                        sb.Append(@"\\");
-                        break;
-                    case '\0':
-                        sb.Append(@"\0");
-                        break;
-                    case '\a':
-                        sb.Append(@"\a");
-                        break;
-                    case '\b':
-                        sb.Append(@"\b");
-                        break;
-                    case '\n':
-                        sb.Append(@"\n");
-                        break;
-                    case '\r':
-                        sb.Append(@"\r");
-                        break;
-                    case '\f':
-                        sb.Append(@"\f");
-                        break;
-                    case '\t':
-                        sb.Append(@"\t");
-                        break;
-                    case '\v':
-                        sb.Append(@"\v");
-                        break;
+                    case '\\': sb.Append(@"\\"); break;
+                    case '\0': sb.Append(@"\0"); break;
+                    case '\a': sb.Append(@"\a"); break;
+                    case '\b': sb.Append(@"\b"); break;
+                    case '\n': sb.Append(@"\n"); break;
+                    case '\r': sb.Append(@"\r"); break;
+                    case '\f': sb.Append(@"\f"); break;
+                    case '\t': sb.Append(@"\t"); break;
+                    case '\v': sb.Append(@"\v"); break;
+                    case '"': sb.Append(@"\"""); break;
+                    case '\'': sb.Append(@"\'"); break;
                     default:
                         sb.Append(c);
                         break;
@@ -2858,7 +2875,7 @@ namespace System.Ini
                 char c = value[i];
                 if (c == '\r' || c == '\n')
                 {
-                    return string.Concat("{", _lineBreaker, value, _lineBreaker, "}");
+                    return string.Concat('"', _lineBreaker, value, _lineBreaker, '"');
                 }
             }
 
@@ -3191,7 +3208,7 @@ namespace System.Ini
 
             return hasMultibyte;
         }
-        
+
         // Normalizes the string case according to the specified comparison mode.
         private static string NormalizeString(string text, StringComparison comparison)
         {
@@ -3463,7 +3480,7 @@ namespace System.Ini
                     string value = match.Groups[_groupValue].Value;
 
                     // Unwrap/unescape if needed
-                    if (_allowMultiLine) value = UnWrap(value);
+                    //if (_allowMultiLine) value = UnWrap(value);
                     if (_allowEscapeChars) value = UnEscape(value);
 
                     // Normalize key case
@@ -3619,7 +3636,10 @@ namespace System.Ini
             if (key == null)
                 throw new ArgumentNullException(nameof(key));
 
-            return GetValue(section, key, defaultValue);
+            string value = GetValue(section, key, defaultValue);
+            if (_allowEscapeChars) value = UnEscape(value);
+
+            return value;
         }
 
         /// <summary>
@@ -3636,7 +3656,7 @@ namespace System.Ini
             if (key == null)
                 throw new ArgumentNullException(nameof(key));
 
-            return GetValue(section, key, defaultValue, false);
+            return GetValue(section, key, defaultValue);
         }
 
         /// <summary>
@@ -3665,7 +3685,7 @@ namespace System.Ini
             if (key == null)
                 throw new ArgumentNullException(nameof(key));
 
-            string format = GetValue(section, key, defaultValue);
+            string format = ReadString(section, key, defaultValue);
             return format == null ? null : string.Format(_culture, format, args);
         }
 
@@ -3834,7 +3854,7 @@ namespace System.Ini
             if (key == null)
                 throw new ArgumentNullException(nameof(key));
 
-            string json = GetValue(section, key, null, false);
+            string json = GetValue(section, key);
             if (json == null)
                 return defaultValue;
 
@@ -3862,7 +3882,7 @@ namespace System.Ini
             if (key == null)
                 throw new ArgumentNullException(nameof(key));
 
-            string json = GetValue(section, key, null, false);
+            string json = GetValue(section, key);
             if (json == null)
                 return defaultValue;
 
