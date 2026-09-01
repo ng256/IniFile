@@ -117,7 +117,20 @@ namespace System.Ini
         /// </summary>
         Value
     }
-
+    
+    /***********************************************************************
+      Parameters can be specified in the global section of the INI file.
+      #comparison=Ordinal|OrdinalIgnoreCase|InvariantCulture|InvariantCultureIgnoreCase|CurrentCulture|CurrentCultureIgnoreCase
+      #escape_chars=True|False
+      #muli_line=True|False
+      #quoted_values=True|False
+      #space_in_key=True|False
+      #inline_comment=True|False
+      #dup_key_override=True|False
+      #delimiter=Default|Equals|Colon|Both
+      #comment=Default|Hash|Semicolon|Both
+      #undef_text=Ignore|Key|Value
+    ***********************************************************************/
     /// <summary>
     /// Configuration settings for parsing INI files.
     /// </summary>
