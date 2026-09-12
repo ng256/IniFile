@@ -87,7 +87,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
 
-//#nullable disable
+#nullable disable
 
 namespace System.Ini
 {
@@ -809,14 +809,13 @@ namespace System.Ini
         [NonSerialized]
         private List<Match> _matches;
 
-        // Matched groups indexes.
-        [NonSerialized] private readonly int _groupValue;
-        [NonSerialized] private readonly int _groupSection;
-        [NonSerialized] private readonly int _groupKey;
-        [NonSerialized] private readonly int _groupEntry;
+        // Cached INI group indexes.
+        [NonSerialized] private readonly int _iniValue;
+        [NonSerialized] private readonly int _iniSection;
+        [NonSerialized] private readonly int _iniKey;
+        [NonSerialized] private readonly int _iniEntry;
 
-        // Cached JSON group indices. Resolved once from the shared RegexBundle
-        // instead of doing a dictionary lookup via Groups["name"] on every token.
+        // Cached JSON group indexes.
         [NonSerialized] private readonly int _jsonComment;
         [NonSerialized] private readonly int _jsonWhitespace;
         [NonSerialized] private readonly int _jsonNewline;
@@ -953,7 +952,7 @@ namespace System.Ini
                 for (Match match = _iniRegex.Match(_content); match.Success; match = match.NextMatch())
                 {
                     GroupCollection groups = match.Groups;
-                    if (groups[_groupSection].Success || groups[_groupEntry].Success)
+                    if (groups[_iniSection].Success || groups[_iniEntry].Success)
                         _matches.Add(match);
                 }
 
@@ -1010,10 +1009,10 @@ namespace System.Ini
             _iniRegex = bundle.Ini;
             _jsonRegex = bundle.Json;
 
-            _groupSection = bundle.IniSection;
-            _groupEntry = bundle.IniEntry;
-            _groupKey = bundle.IniKey;
-            _groupValue = bundle.IniValue;
+            _iniSection = bundle.IniSection;
+            _iniEntry = bundle.IniEntry;
+            _iniKey = bundle.IniKey;
+            _iniValue = bundle.IniValue;
 
             _jsonComment = bundle.JsonComment;
             _jsonWhitespace = bundle.JsonWhitespace;
@@ -1538,6 +1537,300 @@ namespace System.Ini
 
         /****************************************** Core of content processing *****************************************/
 
+        #region embeded classes
+
+        // A contiguous slice of _matches representing one occurrence of a section:
+        // the section header at Start followed by its entries up to (but not
+        // including) End. End is either the index of the next section header or
+        // _matches.Count for the last section.
+        private readonly struct SectionRange
+        {
+            public readonly int Start;
+            public readonly int End;
+
+            public SectionRange(int start, int end)
+            {
+                Start = start;
+                End = end;
+            }
+        }
+
+        // Watches an object implementing INotifyPropertyChanged and writes changed
+        // properties to the owning IniFile. Disposing unsubscribes from the event.
+        private sealed class SettingsWatcher : IDisposable
+        {
+            private readonly IniFile _ini;
+            private readonly INotifyPropertyChanged _obj;
+            private readonly Dictionary<string, PropertyInfo> _properties;
+            private bool _disposed;
+
+            public SettingsWatcher(IniFile ini, INotifyPropertyChanged obj)
+            {
+                _ini = ini;
+                _obj = obj;
+
+                // Build a map of property name → PropertyInfo, skipping properties
+                // that are not supposed to participate in serialization.
+                StringComparer comparer = GetComparer(ini._comparison);
+                PropertyInfo[] properties = obj.GetType().GetProperties(
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+
+                int propertiesLength = properties.Length;
+                _properties = new Dictionary<string, PropertyInfo>(propertiesLength, comparer);
+
+                for (int i = 0; i < propertiesLength; i++)
+                {
+                    PropertyInfo property = properties[i];
+
+                    // Skip write-only properties (their getter would throw).
+                    if (!property.CanRead)
+                        continue;
+
+                    // Skip properties marked with [IniIgnore].
+                    if (property.GetCustomAttributes(typeof(IniIgnoreAttribute), false).Length > 0)
+                        continue;
+
+                    _properties[property.Name] = property;
+                }
+
+                _obj.PropertyChanged += OnPropertyChanged;
+            }
+
+            private void OnPropertyChanged(object sender, PropertyChangedEventArgs e)
+            {
+                if (_disposed)
+                    return;
+
+                // An empty or null property name means "all properties changed" —
+                // a common convention (e.g. WPF, MVVM helpers).
+                if (string.IsNullOrEmpty(e.PropertyName))
+                {
+                    foreach (PropertyInfo property in _properties.Values)
+                        _ini.WriteProperty(property, _obj);
+
+                    return;
+                }
+
+                // Write only the property that has actually changed.
+                if (_properties.TryGetValue(e.PropertyName, out PropertyInfo changed))
+                    _ini.WriteProperty(changed, _obj);
+            }
+
+            public void Dispose()
+            {
+                if (_disposed)
+                    return;
+
+                _disposed = true;
+                _obj.PropertyChanged -= OnPropertyChanged;
+            }
+        }
+
+        // Dynamic object wrapper that behaves similarly to ExpandoObject,
+        // but allows custom handling of missing members and provides dictionary access.
+        private class SafeExpandoObject : DynamicObject, IDictionary<string, object>
+        {
+            // Internal storage for dynamic properties.
+            private readonly Dictionary<string, object> _values =
+                new Dictionary<string, object>();
+
+            // Gets a dynamic property value by its name.
+            // Returns false when the property does not exist, causing the dynamic binder
+            // to handle the missing member according to the default behavior.
+            public override bool TryGetMember(GetMemberBinder binder, out object result)
+            {
+                return _values.TryGetValue(binder.Name, out result)
+                       || (result = null) == null;
+            }
+
+            // Sets a dynamic property value by its name.
+            public override bool TrySetMember(SetMemberBinder binder, object value)
+            {
+                try
+                {
+                    _values[binder.Name] = value;
+                }
+                catch
+                {
+                    return false;
+                }
+                return true;
+            }
+
+            // Provides dictionary-style access to dynamic properties.
+            // Returns null instead of throwing an exception when the key is missing.
+            public object this[string key]
+            {
+                get
+                {
+                    object value;
+                    return _values.TryGetValue(key, out value) ? value : null;
+                }
+                set
+                {
+                    _values[key] = value;
+                }
+            }
+
+            // Returns a collection of all property names.
+            public ICollection<string> Keys => _values.Keys;
+
+            // Returns a collection of all property values.
+            public ICollection<object> Values => _values.Values;
+
+            // Returns the number of stored properties.
+            public int Count => _values.Count;
+
+            // Indicates whether the collection can be modified.
+            public bool IsReadOnly => false;
+
+            // Adds a new property with the specified name and value.
+            public void Add(string key, object value)
+            {
+                _values.Add(key, value);
+            }
+
+            // Adds a new property using a key-value pair.
+            public void Add(KeyValuePair<string, object> item)
+            {
+                _values.Add(item.Key, item.Value);
+            }
+
+            // Checks whether a property with the specified name exists.
+            public bool ContainsKey(string key)
+            {
+                return _values.ContainsKey(key);
+            }
+
+            // Removes a property by its name.
+            public bool Remove(string key)
+            {
+                return _values.Remove(key);
+            }
+
+            // Gets a property value by its name.
+            public bool TryGetValue(string key, out object value)
+            {
+                return _values.TryGetValue(key, out value);
+            }
+
+            // Removes all stored properties.
+            public void Clear()
+            {
+                _values.Clear();
+            }
+
+            // Checks whether the collection contains the specified key-value pair.
+            public bool Contains(KeyValuePair<string, object> item)
+            {
+                return ((ICollection<KeyValuePair<string, object>>)_values)
+                    .Contains(item);
+            }
+
+            // Copies all properties to an array starting from the specified index.
+            public void CopyTo(KeyValuePair<string, object>[] array, int arrayIndex)
+            {
+                ((ICollection<KeyValuePair<string, object>>)_values)
+                    .CopyTo(array, arrayIndex);
+            }
+
+            // Removes the specified key-value pair from the collection.
+            public bool Remove(KeyValuePair<string, object> item)
+            {
+                return ((ICollection<KeyValuePair<string, object>>)_values)
+                    .Remove(item);
+            }
+
+            // Returns an enumerator for iterating through stored properties.
+            public IEnumerator<KeyValuePair<string, object>> GetEnumerator()
+            {
+                return _values.GetEnumerator();
+            }
+
+            // Returns a non-generic enumerator for IEnumerable compatibility.
+            IEnumerator IEnumerable.GetEnumerator()
+            {
+                return GetEnumerator();
+            }
+
+            // Converts SafeExpandoObject to a standard ExpandoObject instance.
+            public static explicit operator ExpandoObject(SafeExpandoObject source)
+            {
+                var result = new ExpandoObject();
+                var dict = (IDictionary<string, object>)result;
+
+                foreach (var pair in source)
+                {
+                    dict[pair.Key] = pair.Value;
+                }
+
+                return result;
+            }
+        }
+
+        // A shared bundle of compiled regular expressions and cached group indices.
+        // Bundles are keyed by the effective IniSettings signature and are reused
+        // across IniFile instances with identical settings, so the expensive
+        // pattern construction and Regex compilation happen at most once per unique
+        // configuration.
+        private sealed class RegexBundle
+        {
+            public readonly Regex Ini;
+            public readonly Regex Json;
+
+            // INI group indices.
+            public readonly int IniSection;
+            public readonly int IniEntry;
+            public readonly int IniKey;
+            public readonly int IniValue;
+
+            // JSON group indices.
+            public readonly int JsonComment;
+            public readonly int JsonWhitespace;
+            public readonly int JsonNewline;
+            public readonly int JsonObjectOpen;
+            public readonly int JsonObjectClose;
+            public readonly int JsonArrayOpen;
+            public readonly int JsonArrayClose;
+            public readonly int JsonArraySep;
+            public readonly int JsonValueSep;
+            public readonly int JsonKey;
+            public readonly int JsonValue;
+            public readonly int JsonBool;
+            public readonly int JsonNull;
+            public readonly int JsonString;
+            public readonly int JsonNumber;
+
+            public RegexBundle(Regex ini, Regex json)
+            {
+                Ini = ini;
+                Json = json;
+
+                IniSection = ini.GroupNumberFromName("section");
+                IniEntry = ini.GroupNumberFromName("entry");
+                IniKey = ini.GroupNumberFromName("key");
+                IniValue = ini.GroupNumberFromName("value");
+
+                JsonComment = json.GroupNumberFromName("Comment");
+                JsonWhitespace = json.GroupNumberFromName("whitespace");
+                JsonNewline = json.GroupNumberFromName("newline");
+                JsonObjectOpen = json.GroupNumberFromName("object_open");
+                JsonObjectClose = json.GroupNumberFromName("object_close");
+                JsonArrayOpen = json.GroupNumberFromName("array_open");
+                JsonArrayClose = json.GroupNumberFromName("array_close");
+                JsonArraySep = json.GroupNumberFromName("array_sep");
+                JsonValueSep = json.GroupNumberFromName("value_sep");
+                JsonKey = json.GroupNumberFromName("key");
+                JsonValue = json.GroupNumberFromName("value");
+                JsonBool = json.GroupNumberFromName("bool");
+                JsonNull = json.GroupNumberFromName("null");
+                JsonString = json.GroupNumberFromName("string");
+                JsonNumber = json.GroupNumberFromName("number");
+            }
+        }
+
+        #endregion
+
         #region Internal data access methods
 
         // Rebuilds _sectionIndex and _firstSectionIndex from the current _matches.
@@ -1553,7 +1846,7 @@ namespace System.Ini
             for (int i = 0; i < _matches.Count; i++)
             {
                 Match match = _matches[i];
-                if (!match.Groups[_groupSection].Success)
+                if (!match.Groups[_iniSection].Success)
                     continue;
 
                 if (currentStart < 0)
@@ -1561,7 +1854,7 @@ namespace System.Ini
                 else
                     AddSectionRange(currentName, currentStart, i);
 
-                currentName = match.Groups[_groupValue].Value;
+                currentName = match.Groups[_iniValue].Value;
                 currentStart = i;
             }
 
@@ -1619,7 +1912,7 @@ namespace System.Ini
                 return false;
 
             // Return the original casing from the first occurrence.
-            sectionName = _matches[ranges[0].Start].Groups[_groupValue].Value;
+            sectionName = _matches[ranges[0].Start].Groups[_iniValue].Value;
             return true;
         }
 
@@ -1632,10 +1925,10 @@ namespace System.Ini
             {
                 Match match = _matches[i];
 
-                if (match.Groups[_groupSection].Success)
+                if (match.Groups[_iniSection].Success)
                 {
                     // Convert to lowercase if ignore case mode is enabled.
-                    Group group = match.Groups[_groupValue];
+                    Group group = match.Groups[_iniValue];
                     string section = NormalizeSubstring(_content, group.Index, group.Length, _comparison);
                     sections.Add(section);
                 }
@@ -1655,10 +1948,10 @@ namespace System.Ini
                 for (int i = 0; i < _firstSectionIndex; i++)
                 {
                     Match match = _matches[i];
-                    if (!match.Groups[_groupEntry].Success)
+                    if (!match.Groups[_iniEntry].Success)
                         continue;
 
-                    Group g = match.Groups[_groupKey];
+                    Group g = match.Groups[_iniKey];
                     keys.Add(NormalizeSubstring(_content, g.Index, g.Length, _comparison));
                 }
                 return keys;
@@ -1674,10 +1967,10 @@ namespace System.Ini
                 for (int i = range.Start + 1; i < range.End; i++)
                 {
                     Match match = _matches[i];
-                    if (!match.Groups[_groupEntry].Success)
+                    if (!match.Groups[_iniEntry].Success)
                         continue;
 
-                    Group g = match.Groups[_groupKey];
+                    Group g = match.Groups[_iniKey];
                     keys.Add(NormalizeSubstring(_content, g.Index, g.Length, _comparison));
                 }
             }
@@ -1698,10 +1991,10 @@ namespace System.Ini
                 for (int i = 0; i < _firstSectionIndex; i++)
                 {
                     Match match = _matches[i];
-                    if (!match.Groups[_groupEntry].Success)
+                    if (!match.Groups[_iniEntry].Success)
                         continue;
 
-                    Group keyGroup = match.Groups[_groupKey];
+                    Group keyGroup = match.Groups[_iniKey];
                     if (SubstringEquals(_content, keyGroup.Index, keyGroup.Length, key, _comparison))
                     {
                         keyName = keyGroup.Value;
@@ -1720,10 +2013,10 @@ namespace System.Ini
                 for (int i = range.Start + 1; i < range.End; i++)
                 {
                     Match match = _matches[i];
-                    if (!match.Groups[_groupEntry].Success)
+                    if (!match.Groups[_iniEntry].Success)
                         continue;
 
-                    Group keyGroup = match.Groups[_groupKey];
+                    Group keyGroup = match.Groups[_iniKey];
                     if (SubstringEquals(_content, keyGroup.Index, keyGroup.Length, key, _comparison))
                     {
                         keyName = keyGroup.Value;
@@ -1742,20 +2035,22 @@ namespace System.Ini
         {
             value = null;
             bool found = false;
-
+			
+			// Global entries: scan the region before the first named section.
             if (string.IsNullOrEmpty(section))
             {
                 for (int i = 0; i < _firstSectionIndex; i++)
                 {
                     Match match = _matches[i];
-                    if (!match.Groups[_groupEntry].Success)
+                    if (!match.Groups[_iniEntry].Success)
                         continue;
 
-                    Group keyGroup = match.Groups[_groupKey];
+					Group keyGroup = match.Groups[_iniKey];
                     if (!SubstringEquals(_content, keyGroup.Index, keyGroup.Length, key, _comparison))
                         continue;
 
-                    value = match.Groups[_groupValue].Value;
+                    // Found key.
+					value = match.Groups[_iniValue].Value;
                     found = true;
 
                     // First match wins unless override mode is enabled.
@@ -1764,8 +2059,9 @@ namespace System.Ini
                 }
                 return found;
             }
-
-            if (!TryGetSectionRanges(section, out List<SectionRange> ranges))
+			
+			 // Named section: use the precomputed ranges, one entry loop per occurrence.
+			if (!TryGetSectionRanges(section, out List<SectionRange> ranges))
                 return false;
 
             for (int r = 0; r < ranges.Count; r++)
@@ -1774,14 +2070,15 @@ namespace System.Ini
                 for (int i = range.Start + 1; i < range.End; i++)
                 {
                     Match match = _matches[i];
-                    if (!match.Groups[_groupEntry].Success)
+                    if (!match.Groups[_iniEntry].Success)
                         continue;
 
-                    Group keyGroup = match.Groups[_groupKey];
+                    Group keyGroup = match.Groups[_iniKey];
                     if (!SubstringEquals(_content, keyGroup.Index, keyGroup.Length, key, _comparison))
                         continue;
 
-                    value = match.Groups[_groupValue].Value;
+                    // Found key.
+					value = match.Groups[_iniValue].Value;
                     found = true;
 
                     if (!_allowOverrides)
@@ -1805,24 +2102,28 @@ namespace System.Ini
             values = null;
             List<string> list = null;
 
+			// Global entries: scan the region before the first named section.
             if (string.IsNullOrEmpty(section))
             {
                 for (int i = 0; i < _firstSectionIndex; i++)
                 {
                     Match match = _matches[i];
-                    if (!match.Groups[_groupEntry].Success)
+                    if (!match.Groups[_iniEntry].Success)
                         continue;
 
-                    Group keyGroup = match.Groups[_groupKey];
+                    Group keyGroup = match.Groups[_iniKey];
                     if (!SubstringEquals(_content, keyGroup.Index, keyGroup.Length, key, _comparison))
                         continue;
 
-                    if (list == null)
+                    // Found next key.
+					if (list == null)
                         list = new List<string>(DefaultCapacity);
 
-                    list.Add(match.Groups[_groupValue].Value);
+                    list.Add(match.Groups[_iniValue].Value);
                 }
             }
+			
+			// Named section: use the precomputed ranges, one entry loop per occurrence.
             else if (TryGetSectionRanges(section, out List<SectionRange> ranges))
             {
                 for (int r = 0; r < ranges.Count; r++)
@@ -1831,17 +2132,18 @@ namespace System.Ini
                     for (int i = range.Start + 1; i < range.End; i++)
                     {
                         Match match = _matches[i];
-                        if (!match.Groups[_groupEntry].Success)
+                        if (!match.Groups[_iniEntry].Success)
                             continue;
 
-                        Group keyGroup = match.Groups[_groupKey];
+                        Group keyGroup = match.Groups[_iniKey];
                         if (!SubstringEquals(_content, keyGroup.Index, keyGroup.Length, key, _comparison))
                             continue;
 
+						// Found next key.
                         if (list == null)
                             list = new List<string>(DefaultCapacity);
 
-                        list.Add(match.Groups[_groupValue].Value);
+                        list.Add(match.Groups[_iniValue].Value);
                     }
                 }
             }
@@ -1863,10 +2165,10 @@ namespace System.Ini
                 for (int i = 0; i < _firstSectionIndex; i++)
                 {
                     Match match = _matches[i];
-                    if (!match.Groups[_groupEntry].Success)
+                    if (!match.Groups[_iniEntry].Success)
                         continue;
 
-                    values.Add(match.Groups[_groupValue].Value);
+                    values.Add(match.Groups[_iniValue].Value);
                 }
                 return values;
             }
@@ -1880,10 +2182,10 @@ namespace System.Ini
                 for (int i = range.Start + 1; i < range.End; i++)
                 {
                     Match match = _matches[i];
-                    if (!match.Groups[_groupEntry].Success)
+                    if (!match.Groups[_iniEntry].Success)
                         continue;
 
-                    values.Add(match.Groups[_groupValue].Value);
+                    values.Add(match.Groups[_iniValue].Value);
                 }
             }
 
@@ -1904,14 +2206,14 @@ namespace System.Ini
                 for (int i = 0; i < _firstSectionIndex; i++)
                 {
                     Match match = _matches[i];
-                    if (!match.Groups[_groupEntry].Success)
+                    if (!match.Groups[_iniEntry].Success)
                         continue;
 
-                    Group keyGroup = match.Groups[_groupKey];
+                    Group keyGroup = match.Groups[_iniKey];
                     if (!SubstringEquals(_content, keyGroup.Index, keyGroup.Length, key, _comparison))
                         continue;
 
-                    values.Add(match.Groups[_groupValue].Value);
+                    values.Add(match.Groups[_iniValue].Value);
                 }
                 return values;
             }
@@ -1925,14 +2227,14 @@ namespace System.Ini
                 for (int i = range.Start + 1; i < range.End; i++)
                 {
                     Match match = _matches[i];
-                    if (!match.Groups[_groupEntry].Success)
+                    if (!match.Groups[_iniEntry].Success)
                         continue;
 
-                    Group keyGroup = match.Groups[_groupKey];
+                    Group keyGroup = match.Groups[_iniKey];
                     if (!SubstringEquals(_content, keyGroup.Index, keyGroup.Length, key, _comparison))
                         continue;
 
-                    values.Add(match.Groups[_groupValue].Value);
+                    values.Add(match.Groups[_iniValue].Value);
                 }
             }
 
@@ -1967,9 +2269,9 @@ namespace System.Ini
             {
                 Match match = _matches[i];
 
-                if (match.Groups[_groupSection].Success)
+                if (match.Groups[_iniSection].Success)
                 {
-                    Group group = match.Groups[_groupValue];
+                    Group group = match.Groups[_iniValue];
                     inSection = SubstringEquals(_content, group.Index, group.Length, section, _comparison);
 
                     if (emptySection) break;
@@ -1977,16 +2279,16 @@ namespace System.Ini
                 }
 
                 // If inside the correct section and the match is an entry.
-                if (inSection && match.Groups[_groupEntry].Success)
+                if (inSection && match.Groups[_iniEntry].Success)
                 {
                     lastMatch = match;
 
                     // Continue if the key doesn't match.
-                    Group keyGroup = match.Groups[_groupKey];
+                    Group keyGroup = match.Groups[_iniKey];
                     if (!SubstringEquals(_content, keyGroup.Index, keyGroup.Length, key, _comparison))
                         continue;
 
-                    Group valueGroup = match.Groups[_groupValue];
+                    Group valueGroup = match.Groups[_iniValue];
 
                     int index = valueGroup.Index;
                     int length = valueGroup.Length;
@@ -2058,10 +2360,10 @@ namespace System.Ini
             {
                 Match match = _matches[i];
 
-                if (match.Groups[_groupSection].Success)  // Check if the current match is a section.
+                if (match.Groups[_iniSection].Success)  // Check if the current match is a section.
                 {
                     // Set the inSection flag based on whether the section matches the target section.
-                    Group sectionGroup = match.Groups[_groupValue];
+                    Group sectionGroup = match.Groups[_iniValue];
                     bool sectionMatch = SubstringEquals(_content, sectionGroup.Index, sectionGroup.Length, section, _comparison);
 
                     if (sectionMatch)
@@ -2073,12 +2375,12 @@ namespace System.Ini
                 }
 
                 // Check if inside the correct section and the current match is an entry.
-                if (inSection && match.Groups[_groupEntry].Success)
+                if (inSection && match.Groups[_iniEntry].Success)
                 {
                     lastMatch = match;  // Remember the last entry in the section.
 
                     // Check if the key matches.
-                    Group keyGroup = match.Groups[_groupKey];
+                    Group keyGroup = match.Groups[_iniKey];
                     if (SubstringEquals(_content, keyGroup.Index, keyGroup.Length, key, _comparison))
                     {
                         keyMatches.Add(match);
@@ -2087,7 +2389,7 @@ namespace System.Ini
                         if (valueIndex < values.Length)
                         {
                             // Get the group representing the value.
-                            Group valueGroup = match.Groups[_groupValue];
+                            Group valueGroup = match.Groups[_iniValue];
 
                             // Get the new value to insert.
                             string newValue = values[valueIndex++] ?? string.Empty;
@@ -2244,38 +2546,34 @@ namespace System.Ini
             if (index >= matches.Count)
                 return;
 
-            int nesting = 0;
-            bool started = false;
+            bool openedStructure = false;
 
-            while (index < matches.Count)
+            for (int nesting = 0; index < matches.Count; index++)
             {
                 Match m = matches[index];
 
-                // Skip comments, whitespace, newlines
+                // Skip comments, whitespace, newlines.
                 if(m.Groups[_jsonComment].Success
                     || m.Groups[_jsonWhitespace].Success
                     || m.Groups[_jsonNewline].Success)
-                {
-                    index++;
                     continue;
-                }
 
                 if (m.Groups[_jsonObjectOpen].Success || m.Groups[_jsonArrayOpen].Success)
                 {
                     nesting++;
-                    started = true;
+                    openedStructure = true;
                 }
                 else if (m.Groups[_jsonObjectClose].Success || m.Groups[_jsonArrayClose].Success)
                 {
                     nesting--;
-                    if (started && nesting == 0)
+                    if (openedStructure && nesting == 0)
                     {
-                        index++; // consume closing token
+                        index++; // Consume closing token.
                         break;
                     }
                 }
+
                 // For any other token (strings, numbers, etc.) just skip
-                index++;
             }
         }
 
@@ -2974,7 +3272,8 @@ namespace System.Ini
             for (int i = 0; i < lastIndex; i++)
             {
                 string segment = segments[i];
-
+				
+				// Current node is dictionary.
                 if (current is IDictionary<string, object> dict)
                 {
                     if (!dict.TryGetValue(segment, out object next) || next == null)
@@ -2985,7 +3284,8 @@ namespace System.Ini
                     current = next;
                     continue;
                 }
-
+				
+				// Current node is an array.
                 if (current is object[] array)
                 {
                     object parsed = ParseNumber(segment, typeof(int), _culture);
@@ -3018,6 +3318,7 @@ namespace System.Ini
                 return true;
             }
 
+            // The index must parse and be in range; arrays are not extended.
             if (current is object[] targetArray)
             {
                 object parsed = ParseNumber(last, typeof(int), _culture);
@@ -3046,6 +3347,7 @@ namespace System.Ini
             start = 0;
             length = 0;
 
+            // Path is empty.
             if (segments == null || segments.Length == 0)
                 return false;
 
@@ -3054,6 +3356,7 @@ namespace System.Ini
             if (index >= matches.Count)
                 return false;
 
+            // Walk to the parent container.
             for (int s = 0; s < segments.Length; s++)
             {
                 if (index >= matches.Count)
@@ -3095,296 +3398,6 @@ namespace System.Ini
         #endregion
 
         #region Internal utility and helper methods
-
-        // A contiguous slice of _matches representing one occurrence of a section:
-        // the section header at Start followed by its entries up to (but not
-        // including) End. End is either the index of the next section header or
-        // _matches.Count for the last section.
-        private readonly struct SectionRange
-        {
-            public readonly int Start;
-            public readonly int End;
-
-            public SectionRange(int start, int end)
-            {
-                Start = start;
-                End = end;
-            }
-        }
-
-        // Watches an object implementing INotifyPropertyChanged and writes changed
-        // properties to the owning IniFile. Disposing unsubscribes from the event.
-        private sealed class SettingsWatcher : IDisposable
-        {
-            private readonly IniFile _ini;
-            private readonly INotifyPropertyChanged _obj;
-            private readonly Dictionary<string, PropertyInfo> _properties;
-            private bool _disposed;
-
-            public SettingsWatcher(IniFile ini, INotifyPropertyChanged obj)
-            {
-                _ini = ini;
-                _obj = obj;
-
-                // Build a map of property name → PropertyInfo, skipping properties
-                // that are not supposed to participate in serialization.
-                StringComparer comparer = GetComparer(ini._comparison);
-                PropertyInfo[] properties = obj.GetType().GetProperties(
-                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-
-                int propertiesLength = properties.Length;
-                _properties = new Dictionary<string, PropertyInfo>(propertiesLength, comparer);
-
-                for (int i = 0; i < propertiesLength; i++)
-                {
-                    PropertyInfo property = properties[i];
-
-                    // Skip write-only properties (their getter would throw).
-                    if (!property.CanRead)
-                        continue;
-
-                    // Skip properties marked with [IniIgnore].
-                    if (property.GetCustomAttributes(typeof(IniIgnoreAttribute), false).Length > 0)
-                        continue;
-
-                    _properties[property.Name] = property;
-                }
-
-                _obj.PropertyChanged += OnPropertyChanged;
-            }
-
-            private void OnPropertyChanged(object sender, PropertyChangedEventArgs e)
-            {
-                if (_disposed)
-                    return;
-
-                // An empty or null property name means "all properties changed" —
-                // a common convention (e.g. WPF, MVVM helpers).
-                if (string.IsNullOrEmpty(e.PropertyName))
-                {
-                    foreach (PropertyInfo property in _properties.Values)
-                        _ini.WriteProperty(property, _obj);
-
-                    return;
-                }
-
-                // Write only the property that has actually changed.
-                if (_properties.TryGetValue(e.PropertyName, out PropertyInfo changed))
-                    _ini.WriteProperty(changed, _obj);
-            }
-
-            public void Dispose()
-            {
-                if (_disposed)
-                    return;
-
-                _disposed = true;
-                _obj.PropertyChanged -= OnPropertyChanged;
-            }
-        }
-
-        // Dynamic object wrapper that behaves similarly to ExpandoObject,
-        // but allows custom handling of missing members and provides dictionary access.
-        private class SafeExpandoObject : DynamicObject, IDictionary<string, object>
-        {
-            // Internal storage for dynamic properties.
-            private readonly Dictionary<string, object> _values =
-                new Dictionary<string, object>();
-
-            // Gets a dynamic property value by its name.
-            // Returns false when the property does not exist, causing the dynamic binder
-            // to handle the missing member according to the default behavior.
-            public override bool TryGetMember(GetMemberBinder binder, out object result)
-            {
-                return _values.TryGetValue(binder.Name, out result)
-                       || (result = null) == null;
-            }
-
-            // Sets a dynamic property value by its name.
-            public override bool TrySetMember(SetMemberBinder binder, object value)
-            {
-                try
-                {
-                    _values[binder.Name] = value;
-                }
-                catch
-                {
-                    return false;
-                }
-                return true;
-            }
-
-            // Provides dictionary-style access to dynamic properties.
-            // Returns null instead of throwing an exception when the key is missing.
-            public object this[string key]
-            {
-                get
-                {
-                    object value;
-                    return _values.TryGetValue(key, out value) ? value : null;
-                }
-                set
-                {
-                    _values[key] = value;
-                }
-            }
-
-            // Returns a collection of all property names.
-            public ICollection<string> Keys => _values.Keys;
-
-            // Returns a collection of all property values.
-            public ICollection<object> Values => _values.Values;
-
-            // Returns the number of stored properties.
-            public int Count => _values.Count;
-
-            // Indicates whether the collection can be modified.
-            public bool IsReadOnly => false;
-
-            // Adds a new property with the specified name and value.
-            public void Add(string key, object value)
-            {
-                _values.Add(key, value);
-            }
-
-            // Adds a new property using a key-value pair.
-            public void Add(KeyValuePair<string, object> item)
-            {
-                _values.Add(item.Key, item.Value);
-            }
-
-            // Checks whether a property with the specified name exists.
-            public bool ContainsKey(string key)
-            {
-                return _values.ContainsKey(key);
-            }
-
-            // Removes a property by its name.
-            public bool Remove(string key)
-            {
-                return _values.Remove(key);
-            }
-
-            // Gets a property value by its name.
-            public bool TryGetValue(string key, out object value)
-            {
-                return _values.TryGetValue(key, out value);
-            }
-
-            // Removes all stored properties.
-            public void Clear()
-            {
-                _values.Clear();
-            }
-
-            // Checks whether the collection contains the specified key-value pair.
-            public bool Contains(KeyValuePair<string, object> item)
-            {
-                return ((ICollection<KeyValuePair<string, object>>)_values)
-                    .Contains(item);
-            }
-
-            // Copies all properties to an array starting from the specified index.
-            public void CopyTo(KeyValuePair<string, object>[] array, int arrayIndex)
-            {
-                ((ICollection<KeyValuePair<string, object>>)_values)
-                    .CopyTo(array, arrayIndex);
-            }
-
-            // Removes the specified key-value pair from the collection.
-            public bool Remove(KeyValuePair<string, object> item)
-            {
-                return ((ICollection<KeyValuePair<string, object>>)_values)
-                    .Remove(item);
-            }
-
-            // Returns an enumerator for iterating through stored properties.
-            public IEnumerator<KeyValuePair<string, object>> GetEnumerator()
-            {
-                return _values.GetEnumerator();
-            }
-
-            // Returns a non-generic enumerator for IEnumerable compatibility.
-            IEnumerator IEnumerable.GetEnumerator()
-            {
-                return GetEnumerator();
-            }
-
-            // Converts SafeExpandoObject to a standard ExpandoObject instance.
-            public static explicit operator ExpandoObject(SafeExpandoObject source)
-            {
-                var result = new ExpandoObject();
-                var dict = (IDictionary<string, object>)result;
-
-                foreach (var pair in source)
-                {
-                    dict[pair.Key] = pair.Value;
-                }
-
-                return result;
-            }
-        }
-
-        // A shared bundle of compiled regular expressions and cached group indices.
-        // Bundles are keyed by the effective IniSettings signature and are reused
-        // across IniFile instances with identical settings, so the expensive
-        // pattern construction and Regex compilation happen at most once per unique
-        // configuration.
-        private sealed class RegexBundle
-        {
-            public readonly Regex Ini;
-            public readonly Regex Json;
-
-            // INI group indices.
-            public readonly int IniSection;
-            public readonly int IniEntry;
-            public readonly int IniKey;
-            public readonly int IniValue;
-
-            // JSON group indices.
-            public readonly int JsonComment;
-            public readonly int JsonWhitespace;
-            public readonly int JsonNewline;
-            public readonly int JsonObjectOpen;
-            public readonly int JsonObjectClose;
-            public readonly int JsonArrayOpen;
-            public readonly int JsonArrayClose;
-            public readonly int JsonArraySep;
-            public readonly int JsonValueSep;
-            public readonly int JsonKey;
-            public readonly int JsonValue;
-            public readonly int JsonBool;
-            public readonly int JsonNull;
-            public readonly int JsonString;
-            public readonly int JsonNumber;
-
-            public RegexBundle(Regex ini, Regex json)
-            {
-                Ini = ini;
-                Json = json;
-
-                IniSection = ini.GroupNumberFromName("section");
-                IniEntry = ini.GroupNumberFromName("entry");
-                IniKey = ini.GroupNumberFromName("key");
-                IniValue = ini.GroupNumberFromName("value");
-
-                JsonComment = json.GroupNumberFromName("Comment");
-                JsonWhitespace = json.GroupNumberFromName("whitespace");
-                JsonNewline = json.GroupNumberFromName("newline");
-                JsonObjectOpen = json.GroupNumberFromName("object_open");
-                JsonObjectClose = json.GroupNumberFromName("object_close");
-                JsonArrayOpen = json.GroupNumberFromName("array_open");
-                JsonArrayClose = json.GroupNumberFromName("array_close");
-                JsonArraySep = json.GroupNumberFromName("array_sep");
-                JsonValueSep = json.GroupNumberFromName("value_sep");
-                JsonKey = json.GroupNumberFromName("key");
-                JsonValue = json.GroupNumberFromName("value");
-                JsonBool = json.GroupNumberFromName("bool");
-                JsonNull = json.GroupNumberFromName("null");
-                JsonString = json.GroupNumberFromName("string");
-                JsonNumber = json.GroupNumberFromName("number");
-            }
-        }
 
         // Builds a compact string signature for the settings that affect the
         // compiled patterns. Order and count must be kept in sync with the fields
@@ -4936,9 +4949,9 @@ namespace System.Ini
             {
                 Match match = _matches[i];
 
-                if (match.Groups[_groupSection].Success)
+                if (match.Groups[_iniSection].Success)
                 {
-                    string sectionName = match.Groups[_groupValue].Value;
+                    string sectionName = match.Groups[_iniValue].Value;
                     // Normalize case according to comparison settings
                     sectionName = NormalizeString(sectionName, _comparison);
 
@@ -4952,7 +4965,7 @@ namespace System.Ini
                     continue;
                 }
 
-                if (match.Groups[_groupEntry].Success)
+                if (match.Groups[_iniEntry].Success)
                 {
                     // If no section yet, use global (empty key)
                     if (currentDict == null)
@@ -4965,8 +4978,8 @@ namespace System.Ini
                         }
                     }
 
-                    string key = match.Groups[_groupKey].Value;
-                    string value = match.Groups[_groupValue].Value;
+                    string key = match.Groups[_iniKey].Value;
+                    string value = match.Groups[_iniValue].Value;
 
                     // Unwrap/unescape if needed
                     //if (_allowMultiLine) value = UnWrap(value);
@@ -5014,9 +5027,9 @@ namespace System.Ini
             {
                 Match match = _matches[i];
 
-                if (match.Groups[_groupSection].Success)
+                if (match.Groups[_iniSection].Success)
                 {
-                    string section = match.Groups[_groupValue].Value;
+                    string section = match.Groups[_iniValue].Value;
 
                     if (!sectionEntries.ContainsKey(section))
                     {
@@ -5028,10 +5041,10 @@ namespace System.Ini
                     continue;
                 }
 
-                if (match.Groups[_groupEntry].Success)
+                if (match.Groups[_iniEntry].Success)
                 {
-                    string key = match.Groups[_groupKey].Value;
-                    string value = match.Groups[_groupValue].Value;
+                    string key = match.Groups[_iniKey].Value;
+                    string value = match.Groups[_iniValue].Value;
 
                     if (currentSection == null)
                     {
@@ -6669,7 +6682,7 @@ namespace System.Ini
             {
                 Match match = _matches[i];
 
-                if (match.Groups[_groupSection].Success)
+                if (match.Groups[_iniSection].Success)
                 {
                     // Close previous range if any.
                     if (currentStart >= 0)
@@ -6681,7 +6694,7 @@ namespace System.Ini
                     }
 
                     // Start new range if section matches.
-                    if (match.Groups[_groupValue].Value.Equals(section, _comparison))
+                    if (match.Groups[_iniValue].Value.Equals(section, _comparison))
                         currentStart = match.Index;
                 }
                 // Entries are ignored - they're inside section ranges.
@@ -6811,12 +6824,13 @@ namespace System.Ini
                     WriteJsonDynamicObject(section, key, value, true);
                 }
 
-
+                // Parse enum.
                 else if (value != null && value.GetType().IsEnum)
                 {
                     str = EnumToString(value);
                 }
 
+                // Convert primitive.
                 else if (value is IConvertible conv)
                 {
                     str = conv.ToString(_culture);
