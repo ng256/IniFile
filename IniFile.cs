@@ -94,6 +94,17 @@ namespace System.Ini
     #region INI settings
 
     /// <summary>
+    /// Specifies how byte arrays are encoded when stored in an INI file.
+    /// </summary>
+    public enum IniByteEncoding
+    {
+        /// <summary>Bytes are written as space-separated hexadecimal pairs (e.g. "01 02 FF").</summary>
+        Hexadecimal,
+        /// <summary>Bytes are written as a Base64 string (e.g. "AQL/").</summary>
+        Base64
+    }
+
+    /// <summary>
     /// Specifies allowed delimiter characters between key and value in an INI file.
     /// </summary>
     [Flags]
@@ -1537,7 +1548,7 @@ namespace System.Ini
 
         /****************************************** Core of content processing *****************************************/
 
-        #region embeded classes
+        #region Embeded classes
 
         // A contiguous slice of _matches representing one occurrence of a section:
         // the section header at Start followed by its entries up to (but not
@@ -5423,6 +5434,94 @@ namespace System.Ini
         }
 
         /// <summary>
+        /// Reads a byte array associated with the specified section and key.
+        /// </summary>
+        /// <param name="section">
+        /// Section name. Pass <c>null</c> for global entries.
+        /// </param>
+        /// <param name="key">
+        /// Key name. Cannot be <c>null</c>.
+        /// </param>
+        /// <param name="encoding">
+        /// How the byte array is encoded in the file: <see cref="IniByteEncoding.Hexadecimal"/>
+        /// (space-separated hex pairs, the default) or <see cref="IniByteEncoding.Base64"/>.
+        /// </param>
+        /// <param name="defaultValue">
+        /// The value returned if the key is missing or the stored string cannot be
+        /// decoded with the chosen <paramref name="encoding"/>.
+        /// </param>
+        /// <returns>
+        /// The decoded byte array, an empty array if the key is present but has an empty
+        /// value, or <paramref name="defaultValue"/> if the key is missing or decoding fails.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="key"/> is <c>null</c>.
+        /// </exception>
+        public byte[] ReadBytes(string section, string key, IniByteEncoding encoding = IniByteEncoding.Hexadecimal, 
+                                params byte[] defaultValue)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+
+            string value = GetValue(section, key);
+            if (value == null)
+                return defaultValue;
+
+            // A present-but-empty value denotes an empty array.
+            if (value.Length == 0)
+                return Array.Empty<byte>();
+
+            try
+            {
+                switch (encoding)
+                {
+                    case IniByteEncoding.Hexadecimal:
+                        return FromHexString(value) ?? defaultValue;
+
+                    case IniByteEncoding.Base64:
+                        return Convert.FromBase64String(value);
+
+                    default:
+                        return defaultValue;
+                }
+            }
+            catch
+            {
+                return defaultValue;
+            }
+        }
+
+        /// <summary>
+        /// Reads a character array associated with the specified section and key.
+        /// The value is stored as a plain string; no escaping or encoding is applied
+        /// beyond the usual INI value processing.
+        /// </summary>
+        /// <param name="section">
+        /// Section name. Pass <c>null</c> for global entries.
+        /// </param>
+        /// <param name="key">
+        /// Key name. Cannot be <c>null</c>.
+        /// </param>
+        /// <param name="defaultValue">
+        /// The value returned if the key is missing.
+        /// </param>
+        /// <returns>
+        /// The characters of the stored value, or <paramref name="defaultValue"/> if
+        /// the key is not found.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="key"/> is <c>null</c>.
+        /// </exception>
+        public char[] ReadChars(string section, string key, params char[] defaultValue)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+
+            string value = ReadString(section, key, null);
+            return value?.ToCharArray() ?? defaultValue;
+        }
+
+        /// <summary>
         /// Reads a value associated with the specified section and key from the ini file and converts it to the specified type.
         /// </summary>
         /// <param name="section">
@@ -6780,6 +6879,84 @@ namespace System.Ini
                 throw new ArgumentNullException(nameof(key));
 
             SetValues(section, key, wrap: true, values);
+        }
+
+        /// <summary>
+        /// Writes a byte array associated with the specified section and key.
+        /// </summary>
+        /// <param name="section">
+        /// Section name. Pass <c>null</c> for global entries.
+        /// </param>
+        /// <param name="key">
+        /// Key name. Cannot be <c>null</c>.
+        /// </param>
+        /// <param name="value">
+        /// The byte array to write. If <c>null</c>, the entry is removed.
+        /// </param>
+        /// <param name="encoding">
+        /// How the byte array is encoded in the file: <see cref="IniByteEncoding.Hexadecimal"/>
+        /// (space-separated hex pairs, the default) or <see cref="IniByteEncoding.Base64"/>.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="key"/> is <c>null</c>.
+        /// </exception>
+        public void WriteBytes(string section, string key, byte[] value,
+                               IniByteEncoding encoding = IniByteEncoding.Hexadecimal)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+
+            if (value == null)
+            {
+                RemoveKey(section, key);
+                return;
+            }
+
+            string str;
+            switch (encoding)
+            {
+                case IniByteEncoding.Base64:
+                    str = Convert.ToBase64String(value);
+                    break;
+
+                case IniByteEncoding.Hexadecimal:
+                default:
+                    str = ToHexString(value);
+                    break;
+            }
+
+            WriteString(section, key, str);
+        }
+
+        /// <summary>
+        /// Writes a character array associated with the specified section and key.
+        /// The array is stored as a plain string; no escaping or encoding is applied
+        /// beyond the usual INI value processing.
+        /// </summary>
+        /// <param name="section">
+        /// Section name. Pass <c>null</c> for global entries.
+        /// </param>
+        /// <param name="key">
+        /// Key name. Cannot be <c>null</c>.
+        /// </param>
+        /// <param name="value">
+        /// The characters to write. If <c>null</c>, the entry is removed.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="key"/> is <c>null</c>.
+        /// </exception>
+        public void WriteChars(string section, string key, char[] value)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+
+            if (value == null)
+            {
+                RemoveKey(section, key);
+                return;
+            }
+
+            WriteString(section, key, new string(value));
         }
 
         /// <summary>
