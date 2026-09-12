@@ -7,7 +7,7 @@ A single-file, dependency-free INI reader and editor that modifies configuration
 
 **IniFile** is a lightweight INI parser that is tolerant of malformed files. Unlike traditional dictionary-based implementations, it **preserves the original formatting** — including whitespace, comments, line endings, and entry order — by modifying the original text directly instead of rebuilding the file.
 
-It provides a convenient API for reading, writing, and deleting values, handling multi-line **JSON blocks** embedded in INI files, working with **dynamic objects**, expanding **environment variables**, and parsing numbers in **different numeral systems**. The library consists of a single source file and has no external dependencies. Drop one file into your project and edit INI files without destroying their formatting.
+It provides a convenient API for reading, writing, and deleting values, handling multi-line **JSON blocks** embedded in INI files, navigating JSON structures by **path**, working with **dynamic objects**, expanding **environment variables**, tracking **model changes** via `INotifyPropertyChanged`, and parsing numbers in **different numeral systems**. The library consists of a single source file and has no external dependencies. Drop one file into your project and edit INI files without destroying their formatting.
 
 See [Details](https://github.com/ng256/IniFile/blob/main/Details.md) document for more information.
 
@@ -18,14 +18,20 @@ See [Details](https://github.com/ng256/IniFile/blob/main/Details.md) document fo
 - **Read & write sections, keys, and values** – standard operations with configurable case sensitivity.
 - **Multiple values** – supports duplicate keys in the same section (e.g., for arrays).
 - **Deletion** – remove a single key, all keys with the same name, or entire sections.
+- **Presence checks** – `ContainsSection` and `Contains` for quick lookups without reading values.
 - **Global entries** – work with key‑value pairs outside any section by passing `null` or an empty string as the section name.
 - **Object serialization** – automatically map INI data to classes using attributes.
+- **Change tracking** – `WatchSettings` subscribes to an `INotifyPropertyChanged` object and writes changed properties back to the INI file as they change.
 - **Multi-line JSON blocks** – read and write JSON blocks that may span multiple lines and include C-like comments. Work with JSON as raw strings, as plain objects, or as dynamic objects (`ExpandoObject` / `DynamicObject`).
+- **JSON path navigation** – address nested values with paths like `"root/nested/number"`; array indices accept decimal, hexadecimal, octal, and binary notation (`"items/0x2/name"`).
+- **Dictionary round-trip** – export the file to a nested dictionary and import it back, either merging into the existing content or replacing it entirely.
 - **Environment variable expansion** – expand standard environment variables (`%TEMP%`, `%USERPROFILE%`, ...) and pseudo‑variables emulating CMD dynamic variables (`%RANDOM%`, `%DATE%`, `%TIME%`, `%CD%`, `%__CD__%`, `%CMDCMDLINE%`, `%__APPDIR__%`, `%0`, `%1`..`%9`, `%*`).
 - **Numbers in different radices** – parse and format numbers in decimal, hexadecimal, octal, and binary notation using common prefixes and suffixes (`0x`, `0b`, `0o`, `&h`, `&o`, `8#`, `%`, `$`, `#`, and trailing `h`, `b`, `o`).
+- **Culture-aware floating point** – decimal separators and number formats follow `CultureInfo.CurrentCulture` or `CultureInfo.InvariantCulture` depending on the `Comparison` setting.
 - **Flexible handling of unrecognised text** – treat otherwise unparseable lines as undefined, as keys with empty values (flags), or as values with empty keys (line continuations).
 - **Duplicate key control** – choose whether reading a duplicated key returns the first occurrence or the last (override mode).
 - **Preserve formatting** – changes modify only the necessary parts, leaving the rest of the file intact.
+- **Normalized output** – `Justify()` produces a compact representation using the configured delimiter and auto-detected line breaker; `Save(..., justify: true)` writes it directly.
 - **Static helper methods** – quick one‑liners for reading/writing a single value without creating an instance.
 - **Escape characters** – optional support for `\n`, `\t`, etc.
 - **Auto‑detection** of line endings and encoding.
@@ -40,23 +46,29 @@ See [Details](https://github.com/ng256/IniFile/blob/main/Details.md) document fo
     - [Loading and Saving](#loading-and-saving)
     - [Reading and Writing Simple Values](#reading-and-writing-simple-values)
     - [Working with Multiple Values (Arrays)](#working-with-multiple-values-arrays)
+    - [Checking for Sections and Keys](#checking-for-sections-and-keys)
     - [Deleting Entries](#deleting-entries)
 3. [JSON Support](#json-support)
     - [Read/Write JSON as Raw String](#readwrite-json-as-raw-string)
     - [Read/Write JSON as Object](#readwrite-json-as-object)
     - [Read/Write JSON as Dynamic Object](#readwrite-json-as-dynamic-object)
+    - [Navigating JSON by Path](#navigating-json-by-path)
 4. [Environment Variable Expansion](#environment-variable-expansion)
 5. [Numbers in Different Radices](#numbers-in-different-radices)
+    - [Culture and Decimal Separators](#culture-and-decimal-separators)
 6. [Object Serialization with Attributes](#object-serialization-with-attributes)
-7. [Static Helper Methods](#static-helper-methods)
-8. [Configuration with `IniSettings`](#configuration-with-inisettings)
-9. [Embedded Parser Settings (Directives)](#embedded-parser-settings-directives)
-10. [Full API Reference](#full-api-reference)
-11. [Background](#background)
+7. [Change Tracking with `WatchSettings`](#change-tracking-with-watchsettings)
+8. [Dictionary Import and Export](#dictionary-import-and-export)
+9. [Normalized Output with `Justify`](#normalized-output-with-justify)
+10. [Static Helper Methods](#static-helper-methods)
+11. [Configuration with `IniSettings`](#configuration-with-inisettings)
+12. [Embedded Parser Settings (Directives)](#embedded-parser-settings-directives)
+13. [Full API Reference](#full-api-reference)
+14. [Background](#background)
     - [INI File Format](#ini-file-format)
     - [Regular Expression](#regular-expression)
     - [C# Implementation](#c-implementation)
-12. [License](#license)
+15. [License](#license)
 
 ## Installation
 
@@ -67,6 +79,16 @@ Simply add `IniFile.cs` to your project and start using it. No external dependen
 ## Usage
 
 ### Loading and Saving
+
+```ini
+; config.ini
+[Host]
+Network = localhost
+Port = 8080
+
+[Environment]
+LogDirectory = "/var/log/myapp"
+```
 
 ```csharp
 using System.Ini;
@@ -115,6 +137,9 @@ ini = IniFile.Create(settings);
 
 // Save with encoding.
 ini.Save("config.ini", Encoding.UTF8);
+
+// Save a normalized representation instead of the raw content.
+ini.Save("config.clean.ini", justify: true);
 ```
 
 For convenience, legacy overloads are still available but marked as obsolete. They internally use `IniSettings` with default values.
@@ -178,6 +203,13 @@ ini.WriteBoolean("Network", "Enabled", false);
 
 ### Working with Multiple Values (Arrays)
 
+```ini
+[Servers]
+Address = 10.0.0.1
+Address = 10.0.0.2
+Address = 10.0.0.3
+```
+
 ```csharp
 // Write array.
 ini.WriteStrings("Servers", "Address", "10.0.0.1", "10.0.0.2", "10.0.0.3");
@@ -186,7 +218,36 @@ ini.WriteStrings("Servers", "Address", "10.0.0.1", "10.0.0.2", "10.0.0.3");
 string[] addresses = ini.ReadStrings("Servers", "Address");
 ```
 
+### Checking for Sections and Keys
+
+```ini
+[Server]
+Port = 8080
+
+theme = dark
+```
+
+```csharp
+bool hasServer  = ini.ContainsSection("Server");       // true if the section exists
+bool hasPort    = ini.Contains("Server", "Port");      // true if the key exists in the section
+bool hasGlobal  = ini.Contains(null, "theme");         // checks entries above all sections
+bool emptySec   = ini.ContainsSection(null);           // always false — global is not a section
+```
+
+`ContainsSection` and `Contains` are cheap: they only scan the cached match list and don't parse values. Use them to distinguish "key not present" from "key present with an empty value".
+
 ### Deleting Entries
+
+```ini
+[Network]
+Host = localhost
+Port = 8080
+
+[Servers]
+Address = 10.0.0.1
+Address = 10.0.0.2
+Address = 10.0.0.3
+```
 
 ```csharp
 // Remove first occurrence of a key.
@@ -244,6 +305,11 @@ The `beautify` option formats the JSON with indentation and newlines for better 
 
 Dynamic objects (`ExpandoObject`, custom `DynamicObject` subclasses) are fully supported for both reading and writing. Nested dictionaries and arrays are converted recursively, so accessing members via `dynamic` works at any depth.
 
+```ini
+[App]
+config = { "timeout": 30, "retry": 5 }
+```
+
 ```csharp
 // Read JSON as a dynamic object.
 dynamic dyn = ini.ReadJsonDynamicObject("App", "config");
@@ -278,15 +344,99 @@ public class AppConfig
 }
 ```
 
+### Navigating JSON by Path
+
+Reading and writing individual nodes inside a JSON block is done with a **slash- or backslash-separated path**. Array elements are addressed by their numeric index, which may be written in decimal, hexadecimal, octal, or binary notation — the same rules used everywhere else in the library.
+
+```ini
+[test]
+json = { "root": { "nested": { "number": 42 }, "list": [10, 20, 30] } }
+```
+
+```csharp
+var ini = IniFile.Load("test.ini");
+
+// Read primitives at any depth.
+int n = ini.ReadJsonObject("test", "json", "root/nested/number", -1);
+// → 42
+
+// Read a subtree as a plain object (dictionary / array / primitive).
+object nested = ini.ReadJsonObject("test", "json", "root/nested");
+// → Dictionary<string, object> { "number": 42 }
+
+// Read as a dynamic object.
+dynamic dyn = ini.ReadJsonDynamicObject("test", "json", "root");
+int v = dyn.nested.number;
+
+// Read the raw JSON fragment, preserving its original formatting.
+string raw = ini.ReadJsonString("test", "json", "root/nested");
+// → "{ \"number\": 42 }"
+
+// Array indices: decimal, hex, octal, binary — all equivalent.
+ini.ReadJsonString("test", "json", "root/list/0x1"); // → "20"
+ini.ReadJsonString("test", "json", "root/list/0b10"); // → "30"
+
+// Any failure returns the supplied default.
+ini.ReadJsonObject("test", "json", "root/missing", "fallback");
+ini.ReadJsonObject("test", "json", "root/list/99", "fallback");
+```
+
+Writing by path modifies only the addressed node, leaving the rest of the JSON structure untouched. Missing intermediate objects are created automatically.
+
+```csharp
+// Update an existing value.
+ini.WriteJsonObject("test", "json", "root/nested/number", 100);
+
+// Create a new subtree.
+ini.WriteJsonObject("test", "json", "root/extra/deep/value", "hi");
+// → json = { "root": { "nested": {...}, "extra": { "deep": { "value": "hi" } } } }
+
+// Write into an array element.
+ini.WriteJsonObject("test", "json", "root/list/1", 99);
+
+// The dynamic overload accepts any dynamic value and converts it recursively.
+dynamic patch = new ExpandoObject();
+patch.enabled = true;
+patch.retries = 3;
+ini.WriteJsonDynamicObject("test", "json", "root/nested/options", patch);
+```
+
+**Behaviour notes:**
+
+- The path uses `/` or `\` as separators. Empty segments are ignored (`"root//nested/"` is the same as `"root/nested"`).
+- Array indices go through the shared `ParseNumber` routine, so `0x2`, `0b10`, `0o2`, `%10`, `$2`, `2h`, `2o` all resolve to the same index.
+- If an intermediate node is a primitive (not an object or an array), or an array index is out of range, write operations perform no change; read operations return `defaultValue`. No exceptions are thrown.
+- `ReadJsonString(section, key, path, defaultValue)` returns the raw JSON fragment with its original whitespace, comments, and line breaks — useful when you want to preserve formatting exactly.
+- `WriteJsonObject` and `WriteJsonDynamicObject` accept a `beautify` flag. When `true`, the resulting JSON is indented for readability.
+
 ---
 
 ## Environment Variable Expansion
 
 `ReadExpandedString` expands environment variables and pseudo‑variables before returning the value. This is useful when INI files contain paths and templates that depend on the runtime environment.
 
+```ini
+[Logging]
+; Standard environment variables
+Path = %TEMP%\app.log
+UserProfileDir = %USERPROFILE%\Documents
+
+; Pseudo-variables emulating CMD dynamic variables
+Backup = %USERPROFILE%\backup\%DATE%_%TIME%.log
+SessionDir = %CD%\session_%RANDOM%
+Script = %0 --config "%CD%\app.ini" %*
+```
+
 ```csharp
 // Expands %TEMP% and other standard environment variables.
 string path = ini.ReadExpandedString("Logging", "Path", @"%TEMP%\app.log");
+
+// Expands pseudo-variables such as %DATE% and %RANDOM%.
+string backup = ini.ReadExpandedString("Logging", "Backup");
+// → C:\Users\Alice\backup\20260912_143022.log
+
+// Standard .NET variables (invalid names) are left unchanged.
+string literal = ini.ReadExpandedString("Logging", "Unknown", "%NOT_A_VAR%");
 ```
 
 ### Supported variables
@@ -311,6 +461,11 @@ If expansion fails (for example, the variable name is invalid for the platform),
 
 Apply `[IniExpanded]` to a property and `ReadSettings` will use `ReadExpandedString` instead of `ReadString`:
 
+```ini
+[App]
+LogPath = %TEMP%\app.log
+```
+
 ```csharp
 public class AppConfig
 {
@@ -321,7 +476,7 @@ public class AppConfig
 
 var config = new AppConfig();
 ini.ReadSettings(config);
-// config.LogPath now has %TEMP% and other variables expanded.
+// config.LogPath now has %TEMP% expanded.
 ```
 
 The attribute only affects reading; writing stores the value exactly as provided.
@@ -332,36 +487,155 @@ The attribute only affects reading; writing stores the value exactly as provided
 
 `IniFile` can parse and format integer and floating‑point values in several numeral systems. The parser recognises common prefixes and suffixes used by .NET, C/C++, Pascal, and assembler‑style notations.
 
-| Notation | Example | Value |
-|----------|---------|-------|
-| Decimal | `255` | 255 |
-| Hex `0x` | `0xFF` | 255 |
-| Hex `&h` | `&hFF` | 255 |
-| Hex `$` | `$FF` | 255 |
-| Hex `#` | `#FF` | 255 |
-| Hex `&` | `&FF` | 255 |
-| Hex suffix `h` | `FFh` | 255 |
-| Binary `0b` | `0b11111111` | 255 |
-| Binary `%` | `%11111111` | 255 |
-| Binary suffix `b` | `11111111b` | 255 |
-| Octal `0o` | `0o377` | 255 |
-| Octal `8#` | `8#377` | 255 |
-| Octal `&o` | `&o377` | 255 |
-| Octal suffix `o` | `377o` | 255 |
+### Integer notations
 
-```csharp
-int value = ini.ReadInt32("Mask", "Flags");   // parses 0xFF, 0b1010, %101, ...
+| Notation | Example | Value | Typical origin |
+|----------|---------|-------|----------------|
+| Decimal | `255` | 255 | universal |
+| Decimal negative | `-42` | -42 | universal |
+| Hex `0x` | `0xFF` | 255 | C, C++, C#, .NET |
+| Hex `0x` | `0xDEAD` | 57005 | C, C++, C# |
+| Hex `&h` | `&hFF` | 255 | BASIC, VBScript |
+| Hex `$` | `$FF` | 255 | Pascal, Delphi |
+| Hex `#` | `#1F` | 31 | some assemblers |
+| Hex `&` | `&FF` | 255 | assemblers |
+| Hex suffix `h` | `FFh` | 255 | Intel-style assembler |
+| Binary `0b` | `0b1010` | 10 | C++14, C# 7, Python |
+| Binary `0b` | `0b11111111` | 255 | C++14, C# 7, Python |
+| Binary `%` | `%1010` | 10 | some assemblers |
+| Binary suffix `b` | `1010b` | 10 | Intel-style assembler |
+| Octal `0o` | `0o377` | 255 | C++, Python 3 |
+| Octal `8#` | `8#377` | 255 | Visual Basic |
+| Octal `&o` | `&o377` | 255 | VBScript |
+| Octal suffix `o` | `377o` | 255 | some assemblers |
+
+```ini
+[Masks]
+Read = 0x01
+Write = 0x02
+Execute = 0x04
+All = 0x07
+
+[Flags]
+Alpha = &h01
+Beta = %10
+Gamma = 0o4
+
+[BitPattern]
+Top = 1000b
+Bottom = $0F
 ```
 
-The same rules apply when writing values through the strongly‑typed `Write*` methods: only the standard decimal representation is emitted, which keeps the stored values portable across implementations. If you need to preserve a specific notation, use `WriteString`.
+```csharp
+int read  = ini.ReadInt32("Masks", "Read");   // 1
+int write = ini.ReadInt32("Masks", "Write");  // 2
+int all   = ini.ReadInt32("Masks", "All");    // 7
+int beta  = ini.ReadInt32("Flags", "Beta");   // 2
+int top   = ini.ReadInt32("BitPattern", "Top");    // 8
+int bottom= ini.ReadInt32("BitPattern", "Bottom"); // 15
+```
 
-Enumerations also benefit from the common numeric parser: values can be specified by name, by decimal index, or by any of the supported radix forms. Flags combinations can be written as comma‑ or pipe‑separated lists, and mixing names with numeric parts is allowed (`ReadWrite | 0x10`).
+The same parser is used for **array indices in JSON paths**, for **enum values**, and for all numeric `Read*` methods, so a bit mask written as `&hFF` will be understood identically wherever it appears.
+
+The strongly‑typed `Write*` methods always emit the **standard decimal representation**, which keeps stored values portable across implementations. If a specific notation must be preserved, use `WriteString`.
+
+### Enumerations
+
+Enumerations benefit from the same numeric parser: values can be specified by name, by decimal index, or by any supported radix form. Flags combinations can be written as comma‑ or pipe‑separated lists, and mixing names with numeric parts is allowed.
+
+```ini
+[Permissions]
+Access = Read, Write, 0x10
+```
+
+```csharp
+[Flags]
+public enum Permission
+{
+    None    = 0,
+    Read    = 0x01,
+    Write   = 0x02,
+    Execute = 0x04,
+    Admin   = 0x10
+}
+
+var p = ini.Read<Permission>("Permissions", "Access");
+// p = Read | Write | Admin
+```
+
+### Culture and Decimal Separators
+
+The culture used for parsing and formatting floating‑point values is derived from `IniSettings.Comparison`:
+
+| `Comparison` value | `CultureInfo` used |
+|--------------------|--------------------|
+| `CurrentCulture` | `CultureInfo.CurrentCulture` |
+| `CurrentCultureIgnoreCase` | `CultureInfo.CurrentCulture` |
+| `InvariantCulture` | `CultureInfo.InvariantCulture` |
+| `InvariantCultureIgnoreCase` (default) | `CultureInfo.InvariantCulture` |
+| `Ordinal` | `CultureInfo.InvariantCulture` |
+| `OrdinalIgnoreCase` | `CultureInfo.InvariantCulture` |
+
+This affects `ReadDouble`, `ReadSingle`, `ReadDecimal` and their write counterparts. The decimal separator (`.` or `,`), group separators, and the sign character all depend on the chosen culture.
+
+```ini
+[Measurements]
+; Parsed as 3.14 when Comparison = InvariantCulture... (decimal point is '.')
+Invariant = 3.14
+
+; Parsed as 3.14 when Comparison = CurrentCulture... in a German/Russian locale
+; (decimal separator is ','). With InvariantCulture, this would fail to parse
+; and fall back to the default value.
+Localized = 3,14
+
+; Scientific notation — supported by both cultures.
+Scientific = 1.5e-3      ; 0.0015
+Big = 2.5E+10            ; 25000000000
+
+; Negative values.
+BelowZero = -0.001
+```
+
+```csharp
+// Invariant culture (the default): decimal point is '.'.
+var invariant = new IniSettings
+{
+    Comparison = StringComparison.InvariantCultureIgnoreCase
+};
+var ini = IniFile.Load("measurements.ini", invariant);
+
+double a = ini.ReadDouble("Measurements", "Invariant");   // 3.14
+double b = ini.ReadDouble("Measurements", "Localized", 0.0); // 0.0 — "3,14" not parsed
+double s = ini.ReadDouble("Measurements", "Scientific");  // 0.0015
+double n = ini.ReadDouble("Measurements", "BelowZero");   // -0.001
+```
+
+```csharp
+// Current culture (e.g. Russian, German): decimal separator is ','.
+var current = new IniSettings
+{
+    Comparison = StringComparison.CurrentCultureIgnoreCase
+};
+var ini = IniFile.Load("measurements.ini", current);
+
+double a = ini.ReadDouble("Measurements", "Invariant", 0.0);  // 0.0 — "3.14" not parsed
+double b = ini.ReadDouble("Measurements", "Localized");       // 3.14
+```
+
+**Recommendation.** For portable configuration files use the default `InvariantCultureIgnoreCase`. It treats `.` as the decimal separator on every machine, regardless of the system locale. Use `CurrentCulture*` only when the file is intended for a single user community that consistently uses a specific locale.
 
 ---
 
 ## Object Serialization with Attributes
 
 Automatically map INI sections to classes and properties.
+
+```ini
+[Network]
+Host = localhost
+Port = 8080
+LogPath = %TEMP%\network.log
+```
 
 ```csharp
 [IniSection("Network")]
@@ -393,9 +667,194 @@ ini.ReadSettings(settings);                       // instance properties
 
 ---
 
+## Change Tracking with `WatchSettings`
+
+`WriteSettings` writes every property on demand. When the source object implements `INotifyPropertyChanged`, you can instead subscribe to its changes and let `IniFile` persist them as they happen.
+
+```ini
+[Server]
+Host = localhost
+Port = 8080
+```
+
+```csharp
+public class AppConfig : INotifyPropertyChanged
+{
+    private string _host = "localhost";
+    private int _port = 8080;
+
+    [IniSection("Server")]
+    [IniEntry("Host")]
+    public string Host
+    {
+        get => _host;
+        set { _host = value; OnPropertyChanged(nameof(Host)); }
+    }
+
+    [IniSection("Server")]
+    [IniEntry("Port")]
+    public int Port
+    {
+        get => _port;
+        set { _port = value; OnPropertyChanged(nameof(Port)); }
+    }
+
+    [IniIgnore]
+    public string RuntimeOnly { get; set; }
+
+    public event PropertyChangedEventHandler PropertyChanged;
+
+    private void OnPropertyChanged(string name)
+        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+}
+
+// ---
+
+var ini = IniFile.LoadOrCreate("config.ini");
+var config = new AppConfig();
+
+// Optionally write the initial state once.
+ini.WriteSettings(config);
+
+// Watch future changes. Dispose to unsubscribe.
+using (ini.WatchSettings(config))
+{
+    config.Host = "192.168.1.1";   // immediately written to the INI file
+    config.Port = 9090;            // and so is this
+    config.RuntimeOnly = "x";      // ignored — marked [IniIgnore]
+}   // Dispose unsubscribes
+```
+
+**Behaviour notes:**
+
+- `WatchSettings` does **not** write the current state on subscription. Call `WriteSettings(obj)` first if you want the initial state captured.
+- Only changed properties are written. When `PropertyChanged` is raised with an empty or `null` `PropertyName`, all tracked properties are written.
+- Properties marked with `[IniIgnore]` are never tracked.
+- The watcher does not synchronise access to the file. If the source raises changes from multiple threads, the caller is responsible for serialising the writes.
+- `Dispose` is idempotent; calling it twice is safe.
+
+---
+
+## Dictionary Import and Export
+
+The full content of an INI file can be converted to a nested dictionary and back. This is useful for snapshotting, transferring configuration between environments, or moving between `IniFile` and other dictionary-based APIs.
+
+```ini
+; config.ini
+theme = dark
+
+[Server]
+host = localhost
+port = 8080
+
+[Paths]
+include = /opt/data/
+include = /mnt/backup/
+```
+
+```csharp
+// Export: section → key → list of values (preserves order and duplicates).
+Dictionary<string, Dictionary<string, List<string>>> snapshot =
+    ini.ExportToDictionary();
+
+// Snapshot content:
+//   ""       → { "theme" → ["dark"] }
+//   "Server" → { "host"  → ["localhost"], "port" → ["8080"] }
+//   "Paths"  → { "include" → ["/opt/data/", "/mnt/backup/"] }
+//
+// Global entries (above all named sections) are stored under the empty-string key.
+// Multi-value keys become lists; the order in the file is preserved.
+```
+
+```csharp
+// Import: merge into the existing content.
+ini.ImportFromDictionary(snapshot);
+
+// Or replace the entire content.
+ini.ImportFromDictionary(snapshot, replace: true);
+```
+
+**Behaviour notes:**
+
+- With `replace: false` (default), existing keys are overwritten in place, new keys and sections are appended. Formatting of untouched entries is preserved.
+- With `replace: true`, the current content is cleared first, then the data is loaded.
+- An empty value list in the dictionary removes all occurrences of the corresponding key (mirrors `RemoveKeys`).
+- An empty string as the outer key represents global entries located above all named sections.
+- Static file-based overloads are available: `ExportToDictionaryFile` and `ImportFromDictionaryFile`.
+
+```csharp
+// Copy content from one file to another, dropping comments and extra whitespace.
+var snapshot = IniFile.ExportToDictionaryFile("messy.ini");
+IniFile.ImportFromDictionaryFile("clean.ini", snapshot, replace: true);
+```
+
+---
+
+## Normalized Output with `Justify`
+
+`Justify()` returns a compact representation of the file containing only sections and key-value pairs — no comments, no empty lines, no extra whitespace. The original `Content` is not modified; `Justify()` returns a new string.
+
+```ini
+; Application configuration — messy.ini
+
+theme    =    dark
+
+[Server]
+; The main server address
+host     =    localhost
+port=8080
+port=9090
+
+[Paths]
+include = /opt/data/
+include    =    /mnt/backup/
+```
+
+```csharp
+string normalized = ini.Justify();
+```
+
+Result:
+
+```ini
+theme=dark
+
+[Server]
+host=localhost
+port=8080
+port=9090
+
+[Paths]
+include=/opt/data/
+include=/mnt/backup/
+```
+
+The delimiter and line breaker come from the current instance:
+
+- The delimiter is taken from `IniSettings.Delimiters` — `=` for `Equals` and `Both`, `:` for `Colon`.
+- The line breaker is auto-detected from the source content in the constructor, so a file that used `\n` produces `\n`, a file that used `\r\n` produces `\r\n`.
+
+To save a normalized version of the file, pass `justify: true` to any `Save` overload:
+
+```csharp
+ini.Save("config.clean.ini", justify: true);
+ini.Save(stream, Encoding.UTF8, justify: true);
+ini.Save(writer, justify: true);
+```
+
+The `IniFile` instance is never modified by `Save(..., justify: true)` — it writes the justified form to the destination and leaves `Content` intact.
+
+---
+
 ## Static Helper Methods
 
 For quick access to file data without creating an instance:
+
+```ini
+; config.ini
+[Network]
+Port = 8080
+```
 
 ```csharp
 // Read/write a single value.
@@ -413,6 +872,9 @@ foreach (var section in dict)
         Console.WriteLine($"  {entry.Key} = {string.Join(", ", entry.Value)}");
     }
 }
+
+// Import a dictionary back into a file.
+IniFile.ImportFromDictionaryFile("config.ini", dict, replace: true);
 ```
 
 Overloads with `Encoding` and `IniSettings` parameters are also available.
@@ -427,7 +889,7 @@ All parser behaviour is centralised in the `IniSettings` class. It allows you to
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `Comparison` | `StringComparison` | Case sensitivity and culture rules (default: `InvariantCultureIgnoreCase`). |
+| `Comparison` | `StringComparison` | Case sensitivity and culture rules (default: `InvariantCultureIgnoreCase`). Also determines the `CultureInfo` used for parsing and formatting floating‑point numbers. |
 | `AllowEscapeChars` | `bool` | If `true`, escape sequences like `\n` and `\t` are unescaped in values (default: `true`). |
 | `AllowMultiLine` | `bool` | If `true`, values wrapped in `{ ... }` can span multiple lines (default: `true`). |
 | `AllowQuotedValues` | `bool` | If `true`, values enclosed in single or double quotes are read until the matching unescaped quote, preserving whitespace and line breaks (default: `true`). |
@@ -442,6 +904,13 @@ The `IniSettings.Default` property provides a preconfigured instance with the de
 
 ### Example
 
+```ini
+; config.ini
+; A bare word below is treated as a flag (key without a value).
+verbose
+log_to_file
+```
+
 ```csharp
 var settings = new IniSettings
 {
@@ -454,6 +923,8 @@ var settings = new IniSettings
     DuplicateKeyOverride = true                 // last value wins
 };
 var ini = IniFile.Load("config.ini", settings);
+
+bool verbose = ini.ReadBoolean(null, "verbose", false); // true
 ```
 
 ## Embedded Parser Settings (Directives)
@@ -536,14 +1007,16 @@ var ini = IniFile.Load("config.ini", customSettings);
 | Category | Methods |
 |----------|---------|
 | **Read keys and sections** | `ReadSections()`, `ReadKeys(string section)` |
+| **Presence checks** | `ContainsSection(string section)`, `Contains(string section, string key)` |
 | **Read values** | `ReadString`, `ReadExpandedString`, `ReadStrings`, `Read<T>`, `ReadArray<T>`<br>`ReadBoolean`, `ReadInt32`, `ReadDouble`, `ReadDateTime`, `ReadChar`, ... |
-| **Read structured data** | `ReadJsonString`, `ReadJsonObject`, `ReadJsonDynamicObject` |
+| **Read structured data** | `ReadJsonString`, `ReadJsonObject`, `ReadJsonDynamicObject`<br>Each has an overload with a `path` parameter for navigating nested JSON. |
 | **Write values** | `WriteString`, `WriteStrings`, `Write<T>`, `WriteArray<T>`<br>`WriteBoolean`, `WriteInt32`, `WriteDouble`, `WriteDateTime`, `WriteChar`, ... |
-| **Write structured data** | `WriteJsonString`, `WriteJsonObject`, `WriteJsonDynamicObject` |
+| **Write structured data** | `WriteJsonString`, `WriteJsonObject`, `WriteJsonDynamicObject`<br>`WriteJsonObject` and `WriteJsonDynamicObject` accept a `path` parameter for updating a single node. |
 | **Delete keys and sections** | `RemoveKey`, `RemoveKeys`, `RemoveSection` |
-| **Serialization** | `ReadSettings`, `WriteSettings`, `ExportToDictionary` |
+| **Serialization** | `ReadSettings`, `WriteSettings`, `WatchSettings`<br>`ExportToDictionary`, `ImportFromDictionary` |
+| **Normalization** | `Justify()` |
 | **Indexer** | `this[string section, string key]` |
-| **Static** | `Load`, `LoadOrCreate`, `Save`, `ReadFromFile<T>`, `WriteToFile<T>`, `ExportToDictionaryFile` |
+| **Static** | `Load`, `LoadOrCreate`, `Save`, `ReadFromFile<T>`, `WriteToFile<T>`<br>`ExportToDictionaryFile`, `ImportFromDictionaryFile` |
 
 All methods accept `section = null` for global entries. All methods that previously accepted separate parameters (`comparison`, `allowEscChars`, etc.) are now obsolete; use the overloads that accept `IniSettings`.
 
@@ -642,9 +1115,13 @@ For example, JSON support did not require redesigning the whole parser. It was i
 
 The same approach made it possible to add:
 
+- **JSON path navigation** — reuses the existing tokenizer (`_jsonRegex`) and the existing path splitter (`GetPathSegments`). Tokens carry `Match.Index` and `Match.Length`, so the raw JSON fragment at any path can be returned without re-serialising it and without losing formatting.
 - **Environment variable expansion** — a thin wrapper (`ReadExpandedString`) over the existing read path that substitutes variables before returning the value, plus the `[IniExpanded]` attribute for declarative use in serialization.
 - **Dynamic object support** — a lightweight adapter (`SafeExpandoObject`) that bridges `IDictionary<string, object>` and `ExpandoObject`, allowing JSON entries to be read and written as dynamic objects at any nesting depth.
-- **Multi‑radix number parsing** — an extended `ParseNumber` routine used by all numeric `Read*` methods, recognising common prefixes and suffixes for hex, octal, and binary notation.
+- **Multi‑radix number parsing** — an extended `ParseNumber` routine used by all numeric `Read*` methods, by enum parsing, and by the JSON path navigator when resolving array indices. Floating‑point parsing additionally respects the culture derived from `IniSettings.Comparison`.
+- **Change tracking** — `WatchSettings` builds a private property-name → `PropertyInfo` map once, then subscribes to `INotifyPropertyChanged` and writes only the changed properties. No reflection lookups on every event.
+- **Dictionary round-trip** — `ImportFromDictionary` is a thin layer over the existing `WriteStrings` / `RemoveKeys`, so it inherits all formatting-preservation and multi-value behaviour for free.
+- **Normalized output** — `Justify()` reuses the cached matches and the auto-detected line breaker, so it does not re-parse the content and respects the source file's conventions.
 
 The result is a flexible INI editor that can handle different file variations, including comments, custom formatting, duplicate keys, syntax errors, and embedded structured data, while keeping the original file layout intact.
 
