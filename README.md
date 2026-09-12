@@ -15,27 +15,20 @@ See [Details](https://github.com/ng256/IniFile/blob/main/Details.md) document fo
 
 ## Key Features
 
-- **Read & write sections, keys, and values** – standard operations with configurable case sensitivity.
-- **Multiple values** – supports duplicate keys in the same section (e.g., for arrays).
-- **Deletion** – remove a single key, all keys with the same name, or entire sections.
-- **Presence checks** – `ContainsSection` and `Contains` for quick lookups without reading values.
-- **Global entries** – work with key‑value pairs outside any section by passing `null` or an empty string as the section name.
-- **Object serialization** – automatically map INI data to classes using attributes.
-- **Change tracking** – `WatchSettings` subscribes to an `INotifyPropertyChanged` object and writes changed properties back to the INI file as they change.
-- **Multi-line JSON blocks** – read and write JSON blocks that may span multiple lines and include C-like comments. Work with JSON as raw strings, as plain objects, or as dynamic objects (`ExpandoObject` / `DynamicObject`).
-- **JSON path navigation** – address nested values with paths like `"root/nested/number"`; array indices accept decimal, hexadecimal, octal, and binary notation (`"items/0x2/name"`).
-- **Dictionary round-trip** – export the file to a nested dictionary and import it back, either merging into the existing content or replacing it entirely.
-- **Environment variable expansion** – expand standard environment variables (`%TEMP%`, `%USERPROFILE%`, ...) and pseudo‑variables emulating CMD dynamic variables (`%RANDOM%`, `%DATE%`, `%TIME%`, `%CD%`, `%__CD__%`, `%CMDCMDLINE%`, `%__APPDIR__%`, `%0`, `%1`..`%9`, `%*`).
-- **Numbers in different radices** – parse and format numbers in decimal, hexadecimal, octal, and binary notation using common prefixes and suffixes (`0x`, `0b`, `0o`, `&h`, `&o`, `8#`, `%`, `$`, `#`, and trailing `h`, `b`, `o`).
-- **Culture-aware floating point** – decimal separators and number formats follow `CultureInfo.CurrentCulture` or `CultureInfo.InvariantCulture` depending on the `Comparison` setting.
-- **Flexible handling of unrecognised text** – treat otherwise unparseable lines as undefined, as keys with empty values (flags), or as values with empty keys (line continuations).
-- **Duplicate key control** – choose whether reading a duplicated key returns the first occurrence or the last (override mode).
-- **Preserve formatting** – changes modify only the necessary parts, leaving the rest of the file intact.
-- **Normalized output** – `Justify()` produces a compact representation using the configured delimiter and auto-detected line breaker; `Save(..., justify: true)` writes it directly.
-- **Static helper methods** – quick one‑liners for reading/writing a single value without creating an instance.
-- **Escape characters** – optional support for `\n`, `\t`, etc.
-- **Auto‑detection** of line endings and encoding.
-- **Flexible configuration** – centralised settings via `IniSettings` class (delimiters, comment characters, case sensitivity, quoted values, undefined text mode, duplicate key override, etc.).
+* **Read & write INI files** — sections, keys, values, global entries, and duplicate keys.
+* **Preserve formatting** — modify only the necessary parts while keeping the rest of the file intact.
+* **Flexible parsing** — configurable delimiters, comments, case sensitivity, quoting, undefined text handling, and duplicate-key behaviour.
+* **Automatic encoding and line-ending detection**.
+* **Object serialization** — map INI data to classes using attributes.
+* **Change tracking** — automatically write changed properties back to the INI file via `INotifyPropertyChanged`.
+* **Environment variables** — expand standard and CMD-style pseudo-variables such as `%TEMP%`, `%RANDOM%`, `%CD%`, `%0`–`%9`, and `%*`.
+* **Numbers in multiple radices** — decimal, hexadecimal, octal, and binary notation.
+* **Culture-aware numbers** — floating-point parsing and formatting using the current or invariant culture.
+* **JSON support** — read and write multi-line JSON blocks, including C-style comments, with support for raw strings, objects, and dynamic objects.
+* **JSON path navigation** — access nested values using paths such as `root/nested/number`, including decimal, hexadecimal, octal, and binary array indices.
+* **Dictionary round-trip** — export INI data to nested dictionaries and import it back.
+* **Optional escape sequences** — support for `\n`, `\t`, and other escape characters.
+* **Convenience helpers** — static methods for simple one-line read/write operations.
 
 ---
 
