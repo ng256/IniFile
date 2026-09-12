@@ -12,11 +12,12 @@
           - reading and writing sections, keys, and values;
           - supporting multiple values for the same key;
           - adding, updating, and removing keys and sections;
-          - checking for the presence of sections and keys (Contains);
+          - checking for the presence of sections and keys (ContainsSection,
+            ContainsKey) with O(1) lookup via a cached section index;
           - automatically mapping objects to and from INI files;
           - tracking object changes via INotifyPropertyChanged and persisting
             them to the INI file automatically (WatchSettings);
-          - reading and writing multiline values enclosed in '{' and '}';
+          - reading and writing multiline values enclosed in quotes;
           - reading and writing embedded JSON blocks as raw strings, plain
             objects, or dynamic objects (ExpandoObject, DynamicObject);
           - navigating JSON structures by path (e.g. "root/nested/value"),
@@ -33,7 +34,7 @@
           - producing a normalized (justified) representation of the content
             using the configured delimiter and line breaker;
           - flexible interpretation of otherwise unrecognised text:
-            it can be treated as undefined,   as a key with an empty value
+            it can be treated as undefined, as a key with an empty value
             (flags), or as a value with an empty key (continuation lines);
           - controlling whether the first or last duplicate key value is
             returned.
@@ -47,6 +48,18 @@
        escape sequences,  allowed delimiters,  comment characters,  handling
        of spaces in keys, undefined text mode, duplicate key override, and
        other parser options.
+   
+       Performance characteristics:
+          - compiled Regex instances and their group indices are cached
+            per settings signature (bounded at 32 entries), so the first
+            IniFile with a given configuration pays the compilation cost
+            and every subsequent instance reuses the compiled bundle;
+          - sections are indexed by name into contiguous ranges of the
+            match list, so reads never scan the whole file;
+          - the most recently resolved section is cached in a single slot,
+            skipping the dictionary lookup for consecutive queries;
+          - all reading methods operate on cached numeric group indices
+            instead of performing Groups["name"] lookups per token.
    
        The class can load INI data from strings,  text readers,  streams, or
        files, and can save the modified content back without reformatting.
@@ -797,17 +810,28 @@ namespace System.Ini
         private List<Match> _matches;
 
         // Matched groups indexes.
-        [NonSerialized]
-        private readonly int _groupValue;
-        
-        [NonSerialized]
-        private readonly int _groupSection;
-        
-        [NonSerialized]
-        private readonly int _groupKey;
-        
-        [NonSerialized]
-        private readonly int _groupEntry;
+        [NonSerialized] private readonly int _groupValue;
+        [NonSerialized] private readonly int _groupSection;
+        [NonSerialized] private readonly int _groupKey;
+        [NonSerialized] private readonly int _groupEntry;
+
+        // Cached JSON group indices. Resolved once from the shared RegexBundle
+        // instead of doing a dictionary lookup via Groups["name"] on every token.
+        [NonSerialized] private readonly int _jsonComment;
+        [NonSerialized] private readonly int _jsonWhitespace;
+        [NonSerialized] private readonly int _jsonNewline;
+        [NonSerialized] private readonly int _jsonObjectOpen;
+        [NonSerialized] private readonly int _jsonObjectClose;
+        [NonSerialized] private readonly int _jsonArrayOpen;
+        [NonSerialized] private readonly int _jsonArrayClose;
+        [NonSerialized] private readonly int _jsonArraySep;
+        [NonSerialized] private readonly int _jsonValueSep;
+        [NonSerialized] private readonly int _jsonKey;
+        [NonSerialized] private readonly int _jsonValue;
+        [NonSerialized] private readonly int _jsonBool;
+        [NonSerialized] private readonly int _jsonNull;
+        [NonSerialized] private readonly int _jsonString;
+        [NonSerialized] private readonly int _jsonNumber;
 
         // Regular expression used for parsing the INI file.
         [NonSerialized]
@@ -853,6 +877,28 @@ namespace System.Ini
         [NonSerialized]
         private readonly HashSet<string> _falseValues;
 
+            // Index of sections by name.Each key maps to one or more ranges in
+        // _matches: the position of the section header and the position just past
+        // its last entry. Multiple ranges per name occur when a section is
+        // declared more than once in the file.
+        [NonSerialized] private Dictionary<string, List<SectionRange>> _sectionIndex;
+
+        // Index in _matches of the first named section header, or _matches.Count
+        // if the file contains no named sections. Entries before this index belong
+        // to the global section (empty section name).
+        [NonSerialized]
+        private int _firstSectionIndex;
+
+        // One-slot cache of the most recently resolved section. Used to skip the
+        // dictionary lookup when consecutive queries target the same section.
+        // Invalidated whenever the content changes. _lastSectionRanges == null
+        // with matching _lastSectionName means a cached miss.
+        [NonSerialized]
+        private string _lastSectionName;
+
+        [NonSerialized]
+        private List<SectionRange> _lastSectionRanges;
+
         // Characters used to separate enum flag names in a string representation.
         [NonSerialized] 
         private static readonly char[] _enumSeparator = new[] { ',', '|' };
@@ -864,6 +910,19 @@ namespace System.Ini
         // Characters used to separate segments of a path.
         [NonSerialized]
         private static readonly char[] _pathSeparatorChars = new[] { '/', '\\' };
+
+        [NonSerialized]
+        private static readonly Dictionary<string, Regex> _regexCache = new Dictionary<string, Regex>();
+
+        // Bounded cache of regex bundles keyed by a compact signature of the
+        // settings that influence the patterns. Concurrency-safe via lock, since
+        // bundle construction is expensive and should happen at most once per key.
+        [NonSerialized]
+        private static readonly Dictionary<string, RegexBundle> _regexBundles =
+            new Dictionary<string, RegexBundle>(StringComparer.Ordinal);
+
+        [NonSerialized]
+        private const int MaxRegexBundles = 32;
 
         #endregion
 
@@ -882,15 +941,23 @@ namespace System.Ini
             {
                 _content = value ?? (_content = string.Empty);
                 _matches.Clear();
-                if (string.IsNullOrEmpty(value)) return;
+                _sectionIndex.Clear();
+                _firstSectionIndex = 0;
+                _lastSectionName = null;
+                _lastSectionRanges = null;
+
+                if (string.IsNullOrEmpty(_content))
+                    return;
 
                 // Iterate over matches using the regex pattern and collect sections and entries names.
-                for (Match match = _iniRegex.Match(value); match.Success; match = match.NextMatch())
+                for (Match match = _iniRegex.Match(_content); match.Success; match = match.NextMatch())
                 {
                     GroupCollection groups = match.Groups;
-                    if (groups["section"].Success || groups["entry"].Success)
+                    if (groups[_groupSection].Success || groups[_groupEntry].Success)
                         _matches.Add(match);
                 }
+
+                BuildSectionIndex();
             }
         }
 
@@ -930,19 +997,39 @@ namespace System.Ini
             _culture = GetCultureInfo(comparison);
             _lineBreaker = AutoDetectLineBreaker(content);
             _matches = new List<Match>(DefaultCapacity);
+            _sectionIndex = new Dictionary<string, List<SectionRange>>(comparer);
+            _firstSectionIndex = 0;
+            _lastSectionName = null;
+            _lastSectionRanges = null;
             _trueValues = new HashSet<string>(comparer) { "true", "yes", "on", "enable", "1" };
             _falseValues = new HashSet<string>(comparer) { "false", "no", "off", "disable", "0" };
 
 
             // Initialize parsing engine.
-            _iniRegex = new Regex(iniPattern, regexOptions);
-            _jsonRegex = new Regex(jsonPattern, regexOptions);
+            RegexBundle bundle = GetOrCreateRegexBundle(settings);
+            _iniRegex = bundle.Ini;
+            _jsonRegex = bundle.Json;
 
-            // Cache group numbers.
-            _groupSection = _iniRegex.GroupNumberFromName("section");
-            _groupEntry = _iniRegex.GroupNumberFromName("entry");
-            _groupKey = _iniRegex.GroupNumberFromName("key");
-            _groupValue = _iniRegex.GroupNumberFromName("value");
+            _groupSection = bundle.IniSection;
+            _groupEntry = bundle.IniEntry;
+            _groupKey = bundle.IniKey;
+            _groupValue = bundle.IniValue;
+
+            _jsonComment = bundle.JsonComment;
+            _jsonWhitespace = bundle.JsonWhitespace;
+            _jsonNewline = bundle.JsonNewline;
+            _jsonObjectOpen = bundle.JsonObjectOpen;
+            _jsonObjectClose = bundle.JsonObjectClose;
+            _jsonArrayOpen = bundle.JsonArrayOpen;
+            _jsonArrayClose = bundle.JsonArrayClose;
+            _jsonArraySep = bundle.JsonArraySep;
+            _jsonValueSep = bundle.JsonValueSep;
+            _jsonKey = bundle.JsonKey;
+            _jsonValue = bundle.JsonValue;
+            _jsonBool = bundle.JsonBool;
+            _jsonNull = bundle.JsonNull;
+            _jsonString = bundle.JsonString;
+            _jsonNumber = bundle.JsonNumber;
 
             // Start parsing the content.
             Content = content;
@@ -1453,13 +1540,15 @@ namespace System.Ini
 
         #region Internal data access methods
 
-        // Tries to get the name of the specified section as it appears in the file,
-        // preserving the original casing. Returns true if the section exists.
-        private bool TryGetSection(string section, out string sectionName)
+        // Rebuilds _sectionIndex and _firstSectionIndex from the current _matches.
+        // Called whenever the content changes, so the index always reflects the
+        // latest state of the file.
+        private void BuildSectionIndex()
         {
-            sectionName = null;
-            if (string.IsNullOrEmpty(section))
-                return false;
+            _firstSectionIndex = _matches.Count;
+
+            int currentStart = -1;
+            string currentName = null;
 
             for (int i = 0; i < _matches.Count; i++)
             {
@@ -1467,15 +1556,71 @@ namespace System.Ini
                 if (!match.Groups[_groupSection].Success)
                     continue;
 
-                Group group = match.Groups[_groupValue];
-                if (SubstringEquals(_content, group.Index, group.Length, section, _comparison))
-                {
-                    sectionName = group.Value;
-                    return true;
-                }
+                if (currentStart < 0)
+                    _firstSectionIndex = i;
+                else
+                    AddSectionRange(currentName, currentStart, i);
+
+                currentName = match.Groups[_groupValue].Value;
+                currentStart = i;
             }
 
+            if (currentStart >= 0)
+                AddSectionRange(currentName, currentStart, _matches.Count);
+        }
+
+        private void AddSectionRange(string name, int start, int end)
+        {
+            if (!_sectionIndex.TryGetValue(name, out List<SectionRange> list))
+            {
+                list = new List<SectionRange>(1);
+                _sectionIndex[name] = list;
+            }
+            list.Add(new SectionRange(start, end));
+        }
+
+        // Resolves a section name to its ranges in _matches, using a one-slot
+        // cache to skip the dictionary lookup when consecutive queries target
+        // the same section. Returns false for a null, empty, or missing section;
+        // the miss is also cached so that repeated probes for the same unknown
+        // name do not re-enter the dictionary.
+        private bool TryGetSectionRanges(string section, out List<SectionRange> ranges)
+        {
+            ranges = null;
+
+            if (string.IsNullOrEmpty(section))
+                return false;
+
+            if (ReferenceEquals(section, _lastSectionName))
+            {
+                ranges = _lastSectionRanges;
+                return ranges != null;
+            }
+
+            if (_sectionIndex.TryGetValue(section, out ranges))
+            {
+                _lastSectionName = section;
+                _lastSectionRanges = ranges;
+                return true;
+            }
+
+            _lastSectionName = section;
+            _lastSectionRanges = null;
             return false;
+        }
+
+        // Tries to get the name of the specified section as it appears in the file,
+        // preserving the original casing. Returns true if the section exists.
+        private bool TryGetSection(string section, out string sectionName)
+        {
+            sectionName = null;
+
+            if (!TryGetSectionRanges(section, out List<SectionRange> ranges))
+                return false;
+
+            // Return the original casing from the first occurrence.
+            sectionName = _matches[ranges[0].Start].Groups[_groupValue].Value;
+            return true;
         }
 
         // Method to retrieve all sections in the INI file.
@@ -1483,8 +1628,6 @@ namespace System.Ini
         {
             HashSet<string> sections = new HashSet<string>(GetComparer(_comparison));
 
-            // Iterate over matches using the regex pattern and collect section names.
-            //foreach (Match match in _matches)
             for (int i = 0; i < _matches.Count; i++)
             {
                 Match match = _matches[i];
@@ -1505,30 +1648,37 @@ namespace System.Ini
         private IEnumerable<string> GetKeys(string section)
         {
             HashSet<string> keys = new HashSet<string>(GetComparer(_comparison));
-            bool emptySection = string.IsNullOrEmpty(section);
-            bool inSection = emptySection;
 
-            // Iterate through the content to find keys within the specified section.
-            for (int i = 0; i < _matches.Count; i++)
+            if (string.IsNullOrEmpty(section))
             {
-                Match match = _matches[i];
-
-                // If the section name is not specified, then the parameters without a section,
-                // which are located above the first section, are used.
-                if (match.Groups[_groupSection].Success)
+                // Global entries: those located before the first named section.
+                for (int i = 0; i < _firstSectionIndex; i++)
                 {
-                    Group group = match.Groups[_groupValue];
-                    inSection = SubstringEquals(_content, group.Index, group.Length, section, _comparison);
+                    Match match = _matches[i];
+                    if (!match.Groups[_groupEntry].Success)
+                        continue;
 
-                    if (emptySection) break;
-                    continue;
+                    Group g = match.Groups[_groupKey];
+                    keys.Add(NormalizeSubstring(_content, g.Index, g.Length, _comparison));
                 }
+                return keys;
+            }
 
-                if (inSection && match.Groups[_groupEntry].Success)
+            if (!TryGetSectionRanges(section, out List<SectionRange> ranges))
+                return keys;
+
+            for (int r = 0; r < ranges.Count; r++)
+            {
+                SectionRange range = ranges[r];
+                // Start + 1 skips the section header itself.
+                for (int i = range.Start + 1; i < range.End; i++)
                 {
-                    Group group = match.Groups[_groupKey];
-                    string key = NormalizeSubstring(_content, group.Index, group.Length, _comparison);
-                    keys.Add(key);
+                    Match match = _matches[i];
+                    if (!match.Groups[_groupEntry].Success)
+                        continue;
+
+                    Group g = match.Groups[_groupKey];
+                    keys.Add(NormalizeSubstring(_content, g.Index, g.Length, _comparison));
                 }
             }
 
@@ -1543,24 +1693,36 @@ namespace System.Ini
             if (key == null)
                 return false;
 
-            bool emptySection = string.IsNullOrEmpty(section);
-            bool inSection = emptySection;
-
-            for (int i = 0; i < _matches.Count; i++)
+            if (string.IsNullOrEmpty(section))
             {
-                Match match = _matches[i];
-
-                if (match.Groups[_groupSection].Success)
+                for (int i = 0; i < _firstSectionIndex; i++)
                 {
-                    Group group = match.Groups[_groupValue];
-                    inSection = SubstringEquals(_content, group.Index, group.Length, section, _comparison);
+                    Match match = _matches[i];
+                    if (!match.Groups[_groupEntry].Success)
+                        continue;
 
-                    if (emptySection) break;
-                    continue;
+                    Group keyGroup = match.Groups[_groupKey];
+                    if (SubstringEquals(_content, keyGroup.Index, keyGroup.Length, key, _comparison))
+                    {
+                        keyName = keyGroup.Value;
+                        return true;
+                    }
                 }
+                return false;
+            }
 
-                if (inSection && match.Groups[_groupEntry].Success)
+            if (!TryGetSectionRanges(section, out List<SectionRange> ranges))
+                return false;
+
+            for (int r = 0; r < ranges.Count; r++)
+            {
+                SectionRange range = ranges[r];
+                for (int i = range.Start + 1; i < range.End; i++)
                 {
+                    Match match = _matches[i];
+                    if (!match.Groups[_groupEntry].Success)
+                        continue;
+
                     Group keyGroup = match.Groups[_groupKey];
                     if (SubstringEquals(_content, keyGroup.Index, keyGroup.Length, key, _comparison))
                     {
@@ -1579,36 +1741,49 @@ namespace System.Ini
         private bool TryGetValue(string section, string key, out string value)
         {
             value = null;
-            bool emptySection = string.IsNullOrEmpty(section);
-            bool inSection = emptySection;
             bool found = false;
 
-            // Search for the section and key.
-            for (int i = 0; i < _matches.Count; i++)
+            if (string.IsNullOrEmpty(section))
             {
-                Match match = _matches[i];
-
-                if (match.Groups[_groupSection].Success)
+                for (int i = 0; i < _firstSectionIndex; i++)
                 {
-                    Group group = match.Groups[_groupValue];
-                    inSection = SubstringEquals(_content, group.Index, group.Length, section, _comparison);
+                    Match match = _matches[i];
+                    if (!match.Groups[_groupEntry].Success)
+                        continue;
 
-                    if (emptySection) break;
-                    continue;
-                }
-
-                if (inSection && match.Groups[_groupEntry].Success)
-                {
                     Group keyGroup = match.Groups[_groupKey];
                     if (!SubstringEquals(_content, keyGroup.Index, keyGroup.Length, key, _comparison))
                         continue;
 
                     value = match.Groups[_groupValue].Value;
-                    if (_allowEscapeChars) value = UnEscape(value);
-
                     found = true;
 
                     // First match wins unless override mode is enabled.
+                    if (!_allowOverrides)
+                        return true;
+                }
+                return found;
+            }
+
+            if (!TryGetSectionRanges(section, out List<SectionRange> ranges))
+                return false;
+
+            for (int r = 0; r < ranges.Count; r++)
+            {
+                SectionRange range = ranges[r];
+                for (int i = range.Start + 1; i < range.End; i++)
+                {
+                    Match match = _matches[i];
+                    if (!match.Groups[_groupEntry].Success)
+                        continue;
+
+                    Group keyGroup = match.Groups[_groupKey];
+                    if (!SubstringEquals(_content, keyGroup.Index, keyGroup.Length, key, _comparison))
+                        continue;
+
+                    value = match.Groups[_groupValue].Value;
+                    found = true;
+
                     if (!_allowOverrides)
                         return true;
                 }
@@ -1629,35 +1804,45 @@ namespace System.Ini
         {
             values = null;
             List<string> list = null;
-            bool emptySection = string.IsNullOrEmpty(section);
-            bool inSection = emptySection;
 
-            for (int i = 0; i < _matches.Count; i++)
+            if (string.IsNullOrEmpty(section))
             {
-                Match match = _matches[i];
-
-                if (match.Groups[_groupSection].Success)
+                for (int i = 0; i < _firstSectionIndex; i++)
                 {
-                    Group group = match.Groups[_groupValue];
-                    inSection = SubstringEquals(_content, group.Index, group.Length, section, _comparison);
+                    Match match = _matches[i];
+                    if (!match.Groups[_groupEntry].Success)
+                        continue;
 
-                    if (emptySection) break;
-                    continue;
-                }
-
-                if (inSection && match.Groups[_groupEntry].Success)
-                {
                     Group keyGroup = match.Groups[_groupKey];
                     if (!SubstringEquals(_content, keyGroup.Index, keyGroup.Length, key, _comparison))
                         continue;
 
-                    string value = match.Groups[_groupValue].Value;
-                    if (_allowEscapeChars) value = UnEscape(value);
-
                     if (list == null)
                         list = new List<string>(DefaultCapacity);
 
-                    list.Add(value);
+                    list.Add(match.Groups[_groupValue].Value);
+                }
+            }
+            else if (TryGetSectionRanges(section, out List<SectionRange> ranges))
+            {
+                for (int r = 0; r < ranges.Count; r++)
+                {
+                    SectionRange range = ranges[r];
+                    for (int i = range.Start + 1; i < range.End; i++)
+                    {
+                        Match match = _matches[i];
+                        if (!match.Groups[_groupEntry].Success)
+                            continue;
+
+                        Group keyGroup = match.Groups[_groupKey];
+                        if (!SubstringEquals(_content, keyGroup.Index, keyGroup.Length, key, _comparison))
+                            continue;
+
+                        if (list == null)
+                            list = new List<string>(DefaultCapacity);
+
+                        list.Add(match.Groups[_groupValue].Value);
+                    }
                 }
             }
 
@@ -1672,29 +1857,33 @@ namespace System.Ini
         private IEnumerable<string> GetValues(string section)
         {
             List<string> values = new List<string>(DefaultCapacity);
-            bool emptySection = string.IsNullOrEmpty(section);
-            bool inSection = emptySection;
 
-            // Collect all values within the specified section.
-            for (int i = 0; i < _matches.Count; i++)
+            if (string.IsNullOrEmpty(section))
             {
-                Match match = _matches[i];
-
-                if (match.Groups[_groupSection].Success)
+                for (int i = 0; i < _firstSectionIndex; i++)
                 {
-                    Group group = match.Groups[_groupValue];
-                    inSection = SubstringEquals(_content, group.Index, group.Length, section, _comparison);
+                    Match match = _matches[i];
+                    if (!match.Groups[_groupEntry].Success)
+                        continue;
 
-                    if (emptySection) break;
-                    continue;
+                    values.Add(match.Groups[_groupValue].Value);
                 }
+                return values;
+            }
 
-                if (inSection && match.Groups[_groupEntry].Success)
+            if (!TryGetSectionRanges(section, out List<SectionRange> ranges))
+                return values;
+
+            for (int r = 0; r < ranges.Count; r++)
+            {
+                SectionRange range = ranges[r];
+                for (int i = range.Start + 1; i < range.End; i++)
                 {
-                    string value = match.Groups[_groupValue].Value;
-                    if (_allowEscapeChars) value = UnEscape(value);
+                    Match match = _matches[i];
+                    if (!match.Groups[_groupEntry].Success)
+                        continue;
 
-                    values.Add(value);
+                    values.Add(match.Groups[_groupValue].Value);
                 }
             }
 
@@ -1705,36 +1894,45 @@ namespace System.Ini
         private IEnumerable<string> GetValues(string section, string key)
         {
             // If the key is empty, return all the values in the section.
-            if (string.IsNullOrEmpty(key)) return GetValues(section);
+            if (string.IsNullOrEmpty(key))
+                return GetValues(section);
 
             List<string> values = new List<string>(DefaultCapacity);
-            bool emptySection = string.IsNullOrEmpty(section);
-            bool inSection = emptySection;
 
-            // Collect all values corresponding to the key in the section.
-            for (int i = 0; i < _matches.Count; i++)
+            if (string.IsNullOrEmpty(section))
             {
-                Match match = _matches[i];
-
-                if (match.Groups[_groupSection].Success)
+                for (int i = 0; i < _firstSectionIndex; i++)
                 {
-                    Group group = match.Groups[_groupValue];
-                    inSection = SubstringEquals(_content, group.Index, group.Length, section, _comparison);
-
-                    if (emptySection) break;
-                    continue;
-                }
-
-                if (inSection && match.Groups[_groupEntry].Success)
-                {
-                    Group group = match.Groups[_groupKey];
-                    if (!SubstringEquals(_content, group.Index, group.Length, key, _comparison))
+                    Match match = _matches[i];
+                    if (!match.Groups[_groupEntry].Success)
                         continue;
 
-                    string value = match.Groups[_groupValue].Value;
-                    if (_allowEscapeChars) value = UnEscape(value);
+                    Group keyGroup = match.Groups[_groupKey];
+                    if (!SubstringEquals(_content, keyGroup.Index, keyGroup.Length, key, _comparison))
+                        continue;
 
-                    values.Add(value);
+                    values.Add(match.Groups[_groupValue].Value);
+                }
+                return values;
+            }
+
+            if (!TryGetSectionRanges(section, out List<SectionRange> ranges))
+                return values;
+
+            for (int r = 0; r < ranges.Count; r++)
+            {
+                SectionRange range = ranges[r];
+                for (int i = range.Start + 1; i < range.End; i++)
+                {
+                    Match match = _matches[i];
+                    if (!match.Groups[_groupEntry].Success)
+                        continue;
+
+                    Group keyGroup = match.Groups[_groupKey];
+                    if (!SubstringEquals(_content, keyGroup.Index, keyGroup.Length, key, _comparison))
+                        continue;
+
+                    values.Add(match.Groups[_groupValue].Value);
                 }
             }
 
@@ -2004,7 +2202,9 @@ namespace System.Ini
             while (index < matches.Count)
             {
                 Match m = matches[index];
-                if (!m.Groups["Comment"].Success && !m.Groups["whitespace"].Success && !m.Groups["newline"].Success)
+                if (!m.Groups[_jsonComment].Success
+                    && !m.Groups[_jsonWhitespace].Success
+                    && !m.Groups[_jsonNewline].Success)
                     break;
                 index++;
             }
@@ -2052,18 +2252,20 @@ namespace System.Ini
                 Match m = matches[index];
 
                 // Skip comments, whitespace, newlines
-                if (m.Groups["Comment"].Success || m.Groups["whitespace"].Success || m.Groups["newline"].Success)
+                if(m.Groups[_jsonComment].Success
+                    || m.Groups[_jsonWhitespace].Success
+                    || m.Groups[_jsonNewline].Success)
                 {
                     index++;
                     continue;
                 }
 
-                if (m.Groups["object_open"].Success || m.Groups["array_open"].Success)
+                if (m.Groups[_jsonObjectOpen].Success || m.Groups[_jsonArrayOpen].Success)
                 {
                     nesting++;
                     started = true;
                 }
-                else if (m.Groups["object_close"].Success || m.Groups["array_close"].Success)
+                else if (m.Groups[_jsonObjectClose].Success || m.Groups[_jsonArrayClose].Success)
                 {
                     nesting--;
                     if (started && nesting == 0)
@@ -2086,7 +2288,7 @@ namespace System.Ini
 
             Match m = matches[index];
 
-            if (m.Groups["object_open"].Success || m.Groups["array_open"].Success)
+            if (m.Groups[_jsonObjectOpen].Success || m.Groups[_jsonArrayOpen].Success)
             {
                 SkipStructure(matches, ref index);
                 return;
@@ -2099,11 +2301,7 @@ namespace System.Ini
         // Returns the (start, length) span of the JSON value at the current token
         // index in the original string, and advances the index past the value.
         // Handles nested objects/arrays via SkipStructure.
-        private bool GetJsonValueSpan(
-            MatchCollection matches,
-            ref int index,
-            out int start,
-            out int length)
+        private bool GetJsonValueSpan(MatchCollection matches, ref int index, out int start, out int length)
         {
             start = 0;
             length = 0;
@@ -2113,7 +2311,7 @@ namespace System.Ini
 
             Match m = matches[index];
 
-            if (m.Groups["object_open"].Success || m.Groups["array_open"].Success)
+            if (m.Groups[_jsonObjectOpen].Success || m.Groups[_jsonArrayOpen].Success)
             {
                 int begin = m.Index;
                 SkipStructure(matches, ref index);
@@ -2126,7 +2324,7 @@ namespace System.Ini
                 return true;
             }
 
-            if (m.Groups["value"].Success)
+            if (m.Groups[_jsonValue].Success)
             {
                 start = m.Index;
                 length = m.Length;
@@ -2154,12 +2352,12 @@ namespace System.Ini
 
                 Match m = matches[index];
 
-                if (m.Groups["object_close"].Success)
+                if (m.Groups[_jsonObjectClose].Success)
                     return false;
 
                 if (!first)
                 {
-                    if (!m.Groups["array_sep"].Success)
+                    if (!m.Groups[_jsonArraySep].Success)
                         return false;
 
                     index++;
@@ -2170,16 +2368,16 @@ namespace System.Ini
                     m = matches[index];
 
                     // Trailing comma before closing brace.
-                    if (m.Groups["object_close"].Success)
+                    if (m.Groups[_jsonObjectClose].Success)
                         return false;
                 }
                 first = false;
 
-                if (!m.Groups["key"].Success)
+                if (!m.Groups[_jsonKey].Success)
                     return false;
 
                 // Strip surrounding quotes and unescape the key.
-                string rawKey = m.Groups["key"].Value;
+                string rawKey = m.Groups[_jsonKey].Value;
                 string keyName = rawKey.Length >= 2
                     ? UnEscape(rawKey.Substring(1, rawKey.Length - 2))
                     : rawKey;
@@ -2191,7 +2389,7 @@ namespace System.Ini
                     return false;
 
                 m = matches[index];
-                if (!m.Groups["value_sep"].Success)
+                if (!m.Groups[_jsonValueSep].Success)
                     return false;
 
                 index++;
@@ -2225,12 +2423,12 @@ namespace System.Ini
 
                 Match m = matches[index];
 
-                if (m.Groups["array_close"].Success)
+                if (m.Groups[_jsonArrayClose].Success)
                     return false;
 
                 if (!first)
                 {
-                    if (!m.Groups["array_sep"].Success)
+                    if (!m.Groups[_jsonArraySep].Success)
                         return false;
 
                     index++;
@@ -2241,7 +2439,7 @@ namespace System.Ini
                     m = matches[index];
 
                     // Trailing comma before closing bracket.
-                    if (m.Groups["array_close"].Success)
+                    if (m.Groups[_jsonArrayClose].Success)
                         return false;
                 }
                 first = false;
@@ -2272,7 +2470,7 @@ namespace System.Ini
             // Parse difference type of values.
 
             // Object { ... }
-            if (m.Groups["object_open"].Success)
+            if (m.Groups[_jsonObjectOpen].Success)
             {
                 // Check depth limit before entering
                 if (depth + 1 >= MaxNestingDepth)
@@ -2292,7 +2490,7 @@ namespace System.Ini
             }
 
             // Array [ ... ]
-            else if (m.Groups["array_open"].Success)
+            else if (m.Groups[_jsonArrayOpen].Success)
             {
                 if (depth + 1 >= MaxNestingDepth)
                 {
@@ -2311,7 +2509,7 @@ namespace System.Ini
             }
 
             // Primitive value.
-            else if (m.Groups["value"].Success)
+            else if (m.Groups[_jsonValue].Success)
             {
                 if (!ParsePrimitive(m, out result))
                     return false;
@@ -2343,7 +2541,7 @@ namespace System.Ini
                 Match m = matches[index];
 
                 // End of the object.
-                if (m.Groups["object_close"].Success)
+                if (m.Groups[_jsonObjectClose].Success)
                 {
                     index++;
                     result = dict;
@@ -2353,14 +2551,14 @@ namespace System.Ini
                 if (first)
                 {
                     // Expect key.
-                    if (!m.Groups["key"].Success)
+                    if (!m.Groups[_jsonKey].Success)
                         return false;
                     first = false;
                 }
                 else
                 {
                     // Expect comma or close.
-                    if (m.Groups["array_sep"].Success)
+                    if (m.Groups[_jsonArraySep].Success)
                     {
                         index++;
                         // Skip whitespace.
@@ -2369,7 +2567,7 @@ namespace System.Ini
                         m = matches[index];
 
                         // Trailing comma, skip to close...
-                        if (m.Groups["object_close"].Success)
+                        if (m.Groups[_jsonObjectClose].Success)
                         {
                             index++;
                             result = dict;
@@ -2377,12 +2575,12 @@ namespace System.Ini
                         }
 
                         // ...else expect key.
-                        if (!m.Groups["key"].Success)
+                        if (!m.Groups[_jsonKey].Success)
                             return false;
                     }
 
                     // End of the object.
-                    else if (m.Groups["object_close"].Success)
+                    else if (m.Groups[_jsonObjectClose].Success)
                     {
                         index++;
                         result = dict;
@@ -2395,7 +2593,7 @@ namespace System.Ini
                 }
 
                 // Parse key.
-                string key = UnEscape(m.Groups["key"].Value.Substring(1, m.Groups["key"].Value.Length - 2));
+                string key = UnEscape(m.Groups[_jsonKey].Value.Substring(1, m.Groups[_jsonKey].Value.Length - 2));
                 index++;
 
                 // Skip whitespace.
@@ -2404,7 +2602,7 @@ namespace System.Ini
                 m = matches[index];
 
                 // Expect delimiter.
-                if (!m.Groups["value_sep"].Success)
+                if (!m.Groups[_jsonValueSep].Success)
                     return false;
                 index++;
 
@@ -2436,7 +2634,7 @@ namespace System.Ini
                 Match m = matches[index];
 
                 // End of array.
-                if (m.Groups["array_close"].Success)
+                if (m.Groups[_jsonArrayClose].Success)
                 {
                     index++;
                     result = list.ToArray();
@@ -2451,7 +2649,7 @@ namespace System.Ini
                 else
                 {
                     // Expect comma or close.
-                    if (m.Groups["array_sep"].Success)
+                    if (m.Groups[_jsonArraySep].Success)
                     {
                         // Skip whitespace.
                         index++;
@@ -2460,7 +2658,7 @@ namespace System.Ini
                         m = matches[index];
 
                         // Trailing comma, skip to close.
-                        if (m.Groups["array_close"].Success)
+                        if (m.Groups[_jsonArrayClose].Success)
                         {
                             index++;
                             result = list.ToArray();
@@ -2469,7 +2667,7 @@ namespace System.Ini
 
                         // ...else parse value
                     }
-                    else if (m.Groups["array_close"].Success)
+                    else if (m.Groups[_jsonArrayClose].Success)
                     {
                         index++;
                         result = list.ToArray();
@@ -2496,16 +2694,16 @@ namespace System.Ini
             result = null;
 
             // Null.
-            if (match.Groups["null"].Success)
+            if (match.Groups[_jsonNull].Success)
             {
                 result = null;
                 return true;
             }
 
             // Boolean.
-            if (match.Groups["bool"].Success)
+            if (match.Groups[_jsonBool].Success)
             {
-                if (bool.TryParse(match.Groups["bool"].Value, out bool value))
+                if (bool.TryParse(match.Groups[_jsonBool].Value, out bool value))
                 {
                     result = value;
                     return true;
@@ -2514,19 +2712,19 @@ namespace System.Ini
             }
 
             // String.
-            if (match.Groups["string"].Success)
+            if (match.Groups[_jsonString].Success)
             {
-                string value = match.Groups["string"].Value;
+                string value = match.Groups[_jsonString].Value;
                 if (_allowEscapeChars) value = UnEscape(value);
                 result = value;
                 return true;
             }
 
             // Number.
-            if (match.Groups["number"].Success)
+            if (match.Groups[_jsonNumber].Success)
             {
                 if (double.TryParse(
-                    match.Groups["number"].Value,
+                    match.Groups[_jsonNumber].Value,
                     NumberStyles.Float,
                     _culture,
                     out double value))
@@ -2864,13 +3062,13 @@ namespace System.Ini
                 Match m = matches[index];
                 string segment = segments[s];
 
-                if (m.Groups["object_open"].Success)
+                if (m.Groups[_jsonObjectOpen].Success)
                 {
                     index++;
                     if (!DescendJsonObject(matches, ref index, segment))
                         return false;
                 }
-                else if (m.Groups["array_open"].Success)
+                else if (m.Groups[_jsonArrayOpen].Success)
                 {
                     object parsed = ParseNumber(segment, typeof(int), _culture);
                     if (parsed == null)
@@ -2897,6 +3095,22 @@ namespace System.Ini
         #endregion
 
         #region Internal utility and helper methods
+
+        // A contiguous slice of _matches representing one occurrence of a section:
+        // the section header at Start followed by its entries up to (but not
+        // including) End. End is either the index of the next section header or
+        // _matches.Count for the last section.
+        private readonly struct SectionRange
+        {
+            public readonly int Start;
+            public readonly int End;
+
+            public SectionRange(int start, int end)
+            {
+                Start = start;
+                End = end;
+            }
+        }
 
         // Watches an object implementing INotifyPropertyChanged and writes changed
         // properties to the owning IniFile. Disposing unsubscribes from the event.
@@ -3111,6 +3325,118 @@ namespace System.Ini
             }
         }
 
+        // A shared bundle of compiled regular expressions and cached group indices.
+        // Bundles are keyed by the effective IniSettings signature and are reused
+        // across IniFile instances with identical settings, so the expensive
+        // pattern construction and Regex compilation happen at most once per unique
+        // configuration.
+        private sealed class RegexBundle
+        {
+            public readonly Regex Ini;
+            public readonly Regex Json;
+
+            // INI group indices.
+            public readonly int IniSection;
+            public readonly int IniEntry;
+            public readonly int IniKey;
+            public readonly int IniValue;
+
+            // JSON group indices.
+            public readonly int JsonComment;
+            public readonly int JsonWhitespace;
+            public readonly int JsonNewline;
+            public readonly int JsonObjectOpen;
+            public readonly int JsonObjectClose;
+            public readonly int JsonArrayOpen;
+            public readonly int JsonArrayClose;
+            public readonly int JsonArraySep;
+            public readonly int JsonValueSep;
+            public readonly int JsonKey;
+            public readonly int JsonValue;
+            public readonly int JsonBool;
+            public readonly int JsonNull;
+            public readonly int JsonString;
+            public readonly int JsonNumber;
+
+            public RegexBundle(Regex ini, Regex json)
+            {
+                Ini = ini;
+                Json = json;
+
+                IniSection = ini.GroupNumberFromName("section");
+                IniEntry = ini.GroupNumberFromName("entry");
+                IniKey = ini.GroupNumberFromName("key");
+                IniValue = ini.GroupNumberFromName("value");
+
+                JsonComment = json.GroupNumberFromName("Comment");
+                JsonWhitespace = json.GroupNumberFromName("whitespace");
+                JsonNewline = json.GroupNumberFromName("newline");
+                JsonObjectOpen = json.GroupNumberFromName("object_open");
+                JsonObjectClose = json.GroupNumberFromName("object_close");
+                JsonArrayOpen = json.GroupNumberFromName("array_open");
+                JsonArrayClose = json.GroupNumberFromName("array_close");
+                JsonArraySep = json.GroupNumberFromName("array_sep");
+                JsonValueSep = json.GroupNumberFromName("value_sep");
+                JsonKey = json.GroupNumberFromName("key");
+                JsonValue = json.GroupNumberFromName("value");
+                JsonBool = json.GroupNumberFromName("bool");
+                JsonNull = json.GroupNumberFromName("null");
+                JsonString = json.GroupNumberFromName("string");
+                JsonNumber = json.GroupNumberFromName("number");
+            }
+        }
+
+        // Builds a compact string signature for the settings that affect the
+        // compiled patterns. Order and count must be kept in sync with the fields
+        // of IniSettings used by BuildIniPatternEx / BuildJsonPattern and by
+        // GetRegexOptions.
+        private static string MakeRegexBundleKey(IniSettings s)
+        {
+            return string.Concat(
+                ((int)s.Comparison).ToString(),
+                s.AllowEscapeChars ? "1" : "0",
+                s.AllowMultiLine ? "1" : "0",
+                s.AllowQuotedValues ? "1" : "0",
+                s.AllowSpacesInKey ? "1" : "0",
+                s.AllowInlineComments ? "1" : "0",
+                s.DuplicateKeyOverride ? "1" : "0",
+                "|",
+                ((int)s.Delimiters).ToString(),
+                ((int)s.Comments).ToString(),
+                ((int)s.UndefinedText).ToString());
+        }
+
+        // Returns a cached bundle for the given settings, constructing it on the
+        // first call for each unique settings signature. The signature covers every
+        // IniSettings property that affects the compiled pattern or the
+        // RegexOptions, so a bundle is never reused across incompatible settings.
+        private static RegexBundle GetOrCreateRegexBundle(IniSettings settings)
+        {
+            string key = MakeRegexBundleKey(settings);
+
+            lock (_regexBundles)
+            {
+                if (_regexBundles.TryGetValue(key, out RegexBundle cached))
+                    return cached;
+
+                var options = GetRegexOptions(
+                    settings.Comparison,
+                    RegexOptions.Compiled | RegexOptions.ExplicitCapture);
+
+                var bundle = new RegexBundle(
+                    new Regex(settings.BuildIniPatternEx(), options),
+                    new Regex(settings.BuildJsonPattern(), options));
+
+                // Bounded cache; clear when full rather than LRU, since the number
+                // of distinct settings signatures is tiny in practice.
+                if (_regexBundles.Count >= MaxRegexBundles)
+                    _regexBundles.Clear();
+
+                _regexBundles[key] = bundle;
+                return bundle;
+            }
+        }
+
 
         // Converts a dictionary representation of an object into a SafeExpandoObject.
         private static SafeExpandoObject ConvertToExpando(IDictionary<string, object> dict)
@@ -3215,7 +3541,7 @@ namespace System.Ini
         }
 
         // Sets or clears the RegexOptions flags based on the specified StringComparison, returning the modified value.
-        private static RegexOptions GetRegexOptions(StringComparison comparison, RegexOptions options = RegexOptions.None)
+        private static RegexOptions GetRegexOptions(StringComparison comparison, RegexOptions options = RegexOptions.Compiled | RegexOptions.ExplicitCapture)
         {
             // Bit 0 indicates IgnoreCase.
             if (((int)comparison & 1) != 0)
@@ -4834,21 +5160,35 @@ namespace System.Ini
         /// <param name="defaultValue">
         /// The value to be returned if the specified entry is not found.
         /// </param>
+        /// <param name="expandVariables">
+        /// When <c>true</c>, environment variables and pseudo‑variables
+        /// (<c>%TEMP%</c>, <c>%USERPROFILE%</c>, <c>%RANDOM%</c>, <c>%DATE%</c>,
+        /// <c>%TIME%</c>, <c>%CD%</c>, <c>%__CD__%</c>, <c>%CMDCMDLINE%</c>,
+        /// <c>%__APPDIR__%</c>, <c>%0</c>, <c>%1</c>..<c>%9</c>, <c>%*</c>) in the value
+        /// are replaced with their runtime values. Escape sequences are <b>not</b>
+        /// processed in this mode: the expanded text comes from the environment, not
+        /// from the INI file, so backslashes that arrive from <c>%TEMP%</c>,
+        /// <c>%USERPROFILE%</c>, etc. are not reinterpreted as INI escapes
+        /// (e.g. <c>"\app"</c> stays <c>"\app"</c> and does not become <c>BEL + "pp"</c>).
+        /// </param>
         /// <returns>
-        /// Read value.
+        /// Read value. If the key is not found, <paramref name="defaultValue"/> is returned.
         /// </returns>
         /// <exception cref="ArgumentNullException">
         /// Thrown when parameter <paramref name="key"/> is null.
         /// </exception>
-        public string ReadString(string section, string key, string defaultValue = "")
+        public string ReadString(string section, string key, string defaultValue = "", bool expandVariables = false)
         {
             if (key == null)
                 throw new ArgumentNullException(nameof(key));
 
             string value = GetValue(section, key, defaultValue);
-            if (_allowEscapeChars) value = UnEscape(value);
 
-            return value;
+            return expandVariables 
+                ? ExpandVariables(value) 
+                : _allowEscapeChars 
+                    ? UnEscape(value) 
+                    : value;
         }
 
         /// <summary>
@@ -4921,16 +5261,10 @@ namespace System.Ini
         /// <exception cref="ArgumentNullException">
         /// Thrown when parameter <paramref name="key"/> is null.
         /// </exception>
+        [Obsolete("Use ReadString(section, key, defaultValue, expandVariables: true) instead.")]
         public string ReadExpandedString(string section, string key, string defaultValue = "")
         {
-            if (key == null)
-                throw new ArgumentNullException(nameof(key));
-
-            string value = GetValue(section, key, defaultValue);
-            value = ExpandVariables(value);
-            if (_allowEscapeChars) value = UnEscape(value);
-
-            return value;
+            return ReadString(section, key, defaultValue, expandVariables: true);
         }
 
         /// <summary>
@@ -4985,9 +5319,8 @@ namespace System.Ini
             if (path == null)
                 throw new ArgumentNullException(nameof(path));
 
-            string json = GetValue(section, key);
-            if (json == null)
-                return defaultValue;
+            string json = GetValue(section, key, defaultValue);
+            if (json == null) return null;
 
             try
             {
@@ -5063,6 +5396,10 @@ namespace System.Ini
 
             // Retrieve the array of strings associated with the given section and key.
             string[] values = GetValues(section, key).ToArray();
+
+            if (_allowEscapeChars)
+                for (int i = 0; i < values.Length; i++)
+                    values[i] = UnEscape(values[i]);
 
             // If no strings are found and default values are provided, use the default values.
             if (values.Length == 0 && defaultValues?.Length > 0)
@@ -5277,6 +5614,10 @@ namespace System.Ini
             if (path == null)
                 throw new ArgumentNullException(nameof(path));
 
+            string[] segments = GetPathSegments(path);
+            if (segments.Length == 0)
+                return defaultValue;
+
             string json = GetValue(section, key);
             if (json == null)
                 return defaultValue;
@@ -5287,7 +5628,7 @@ namespace System.Ini
                 if (root == null)
                     return defaultValue;
 
-                if (TryNavigateJsonPath(root, GetPathSegments(path), out object value))
+                if (TryNavigateJsonPath(root, segments, out object value))
                     return value ?? defaultValue;
 
                 return defaultValue;
@@ -5352,16 +5693,16 @@ namespace System.Ini
         /// <exception cref="ArgumentNullException">
         /// Thrown when <paramref name="key"/> or <paramref name="path"/> is <c>null</c>.
         /// </exception>
-        public dynamic ReadJsonDynamicObject(
-            string section,
-            string key,
-            string path,
-            dynamic defaultValue = null)
+        public dynamic ReadJsonDynamicObject(string section, string key, string path, dynamic defaultValue = null)
         {
             if (key == null)
                 throw new ArgumentNullException(nameof(key));
             if (path == null)
                 throw new ArgumentNullException(nameof(path));
+
+            string[] segments = GetPathSegments(path);
+            if (segments.Length == 0)
+                return defaultValue;
 
             string json = GetValue(section, key);
             if (json == null)
@@ -5373,7 +5714,7 @@ namespace System.Ini
                 if (root == null)
                     return defaultValue;
 
-                if (!TryNavigateJsonPath(root, GetPathSegments(path), out object value))
+                if (!TryNavigateJsonPath(root, segments, out object value))
                     return defaultValue;
 
                 if (value == null)
@@ -5540,8 +5881,7 @@ namespace System.Ini
             if (propertyType == typeof(string))
             {
                 bool expanded = property.GetCustomAttributes(typeof(IniExpandedAttribute)).Any();
-                string value = ReadString(section, key, defaultValue as string);
-                if(expanded) value = ExpandVariables(value);
+                string value = ReadString(section, key, defaultValue as string, expanded);
                 property.SetValue(obj, value, null);
 
                 return;
