@@ -12,29 +12,41 @@
           - reading and writing sections, keys, and values;
           - supporting multiple values for the same key;
           - adding, updating, and removing keys and sections;
+          - checking for the presence of sections and keys (Contains);
           - automatically mapping objects to and from INI files;
+          - tracking object changes via INotifyPropertyChanged and persisting
+            them to the INI file automatically (WatchSettings);
           - reading and writing multiline values enclosed in '{' and '}';
-          - reading  and  writing  embedded  JSON  blocks  as raw strings  or 
-            dynamic objects (ExpandoObject, DynamicObject);
+          - reading and writing embedded JSON blocks as raw strings, plain
+            objects, or dynamic objects (ExpandoObject, DynamicObject);
+          - navigating JSON structures by path (e.g. "root/nested/value"),
+            with array indices expressed in decimal, hexadecimal, octal, or
+            binary notation;
           - expanding environment variables and pseudo-variables when reading
             (e.g., %TEMP%, %RANDOM%, %DATE%, %TIME%, %CD%, %0..%9, %*);
-          - parsing  and formatting numbers  in decimal,  hexadecimal,  octal,
+          - parsing and formatting numbers in decimal, hexadecimal, octal,
             and binary notation using common prefixes and suffixes
             (0x, 0b, 0o, &h, &o, 8#, %, $, #, h, b, o, etc.);
+          - exporting content to dictionaries and importing it back
+            (ExportToDictionary / ImportFromDictionary and their file-based
+            counterparts);
+          - producing a normalized (justified) representation of the content
+            using the configured delimiter and line breaker;
           - flexible interpretation of otherwise unrecognised text:
-            it can be treated as undefined, as  a  key  with  an  empty value
+            it can be treated as undefined,   as a key with an empty value
             (flags), or as a value with an empty key (continuation lines);
-          - controlling whether  the first  or  last duplicate  key value  is
+          - controlling whether the first or last duplicate key value is
             returned.
    
-       All  modifications  preserve  the  original  formatting  of  the file,
+       All  modifications  preserve  the  original  formatting of the file,
        including  whitespace,  comments,  and  line  endings,  by  operating
        directly on the original text.
    
        INI parsing behaviour can be configured through the IniSettings class,
-       including string comparison rules, multiline values, escape sequences,
-       allowed delimiters,  comment characters,   handling of spaces in keys,
-       undefined text mode, duplicate key override, and other parser options.
+       including string comparison rules, multiline values, quoted values,
+       escape sequences,  allowed delimiters,  comment characters,  handling
+       of spaces in keys, undefined text mode, duplicate key override, and
+       other parser options.
    
        The class can load INI data from strings,  text readers,  streams, or
        files, and can save the modified content back without reformatting.
@@ -841,12 +853,17 @@ namespace System.Ini
         [NonSerialized]
         private readonly HashSet<string> _falseValues;
 
+        // Characters used to separate enum flag names in a string representation.
         [NonSerialized] 
-        private static readonly char[] _enumSeparator;
+        private static readonly char[] _enumSeparator = new[] { ',', '|' };
 
         // Array containing the characters that are not allowed in path names.
         [NonSerialized]
         private static readonly char[] _invalidPathChars = Path.GetInvalidPathChars();
+
+        // Characters used to separate segments of a path.
+        [NonSerialized]
+        private static readonly char[] _pathSeparatorChars = new[] { '/', '\\' };
 
         #endregion
 
@@ -882,11 +899,6 @@ namespace System.Ini
         /*********************************************** File operations ***********************************************/
 
         #region Constructors
-
-        static IniFile()
-        {
-            _enumSeparator = new[] { ',', '|' };
-        }
 
         // Private constructor to prevent direct instantiation.
         private IniFile()
@@ -1220,9 +1232,15 @@ namespace System.Ini
         /// Saves the INI file content to a <see cref="TextWriter"/>.
         /// </summary>
         /// <param name="writer">The <see cref="TextWriter"/> where the INI file data will be written.</param>
-        public void Save(TextWriter writer)
+        /// <param name="justify">
+        /// When <c>true</c>, a normalized (justified) representation of the content
+        /// is written instead of the raw content. The justified form contains only
+        /// sections and key-value pairs, without comments, empty lines, and extra
+        /// whitespace. The <see cref="IniFile"/> instance itself is not modified.
+        /// </param>
+        public void Save(TextWriter writer, bool justify = false)
         {
-            writer.Write(Content);
+            writer.Write(justify ? Justify() : Content);
         }
 
         /// <summary>
@@ -1234,11 +1252,17 @@ namespace System.Ini
         /// <param name="encoding">
         /// The <see cref="Encoding"/> used to write the data to the stream.
         /// </param>
-        public void Save(Stream stream, Encoding encoding = null)
+        /// <param name="justify">
+        /// When <c>true</c>, a normalized (justified) representation of the content
+        /// is written instead of the raw content. The justified form contains only
+        /// sections and key-value pairs, without comments, empty lines, and extra
+        /// whitespace. The <see cref="IniFile"/> instance itself is not modified.
+        /// </param>
+        public void Save(Stream stream, Encoding encoding = null, bool justify = false)
         {
             using (StreamWriter writer = new StreamWriter(stream, encoding ?? Encoding.UTF8))
             {
-                writer.Write(Content);
+                writer.Write(justify ? Justify() : Content);
             }
         }
 
@@ -1251,10 +1275,16 @@ namespace System.Ini
         /// <param name="encoding">
         /// The <see cref="Encoding"/> used to write the file.
         /// </param>
-        public void Save(string fileName, Encoding encoding = null)
+        /// <param name="justify">
+        /// When <c>true</c>, a normalized (justified) representation of the content
+        /// is written instead of the raw content. The justified form contains only
+        /// sections and key-value pairs, without comments, empty lines, and extra
+        /// whitespace. The <see cref="IniFile"/> instance itself is not modified.
+        /// </param>
+        public void Save(string fileName, Encoding encoding = null, bool justify = false)
         {
             string fullPath = GetFullPath(fileName);
-            File.WriteAllText(fullPath, Content, encoding ?? Encoding.UTF8);
+            File.WriteAllText(fullPath, justify ? Justify() : Content, encoding ?? Encoding.UTF8);
         }
 
         #endregion
@@ -1368,11 +1398,85 @@ namespace System.Ini
             }
         }
 
+        /// <summary>
+        /// Imports the specified dictionary into the INI file at the given path.
+        /// If the file does not exist, it is created.
+        /// </summary>
+        /// <param name="fileName">Path to the INI file.</param>
+        /// <param name="data">
+        /// The dictionary to import. See <see cref="ImportFromDictionary"/> for
+        /// the expected format and semantics.
+        /// </param>
+        /// <param name="encoding">
+        /// The encoding used to read and write the file. If <c>null</c>, auto-detection
+        /// is attempted on read and UTF-8 is used on write.
+        /// </param>
+        /// <param name="comparison">String comparison rules for case sensitivity.</param>
+        /// <param name="allowEscChars">Whether to process escape sequences in values.</param>
+        /// <param name="allowMultiLine">Whether to support multiline values wrapped in braces.</param>
+        /// <param name="replace">
+        /// When <c>false</c> (default), the data is merged into the existing content.
+        /// When <c>true</c>, the existing content is cleared first.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="fileName"/> or <paramref name="data"/> is <c>null</c>.
+        /// </exception>
+        public static void ImportFromDictionaryFile(
+            string fileName,
+            IDictionary<string, Dictionary<string, List<string>>> data,
+            Encoding encoding = null,
+            StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
+            bool allowEscChars = true,
+            bool allowMultiLine = true,
+            bool replace = false)
+        {
+            if (fileName == null)
+                throw new ArgumentNullException(nameof(fileName));
+            if (data == null)
+                throw new ArgumentNullException(nameof(data));
+
+            var settings = new IniSettings
+            {
+                Comparison = comparison,
+                AllowEscapeChars = allowEscChars,
+                AllowMultiLine = allowMultiLine
+            };
+
+            IniFile ini = LoadOrCreate(fileName, encoding, settings);
+            ini.ImportFromDictionary(data, replace);
+            ini.Save(fileName, encoding);
+        }
+
         #endregion
 
         /****************************************** Core of content processing *****************************************/
 
         #region Internal data access methods
+
+        // Tries to get the name of the specified section as it appears in the file,
+        // preserving the original casing. Returns true if the section exists.
+        private bool TryGetSection(string section, out string sectionName)
+        {
+            sectionName = null;
+            if (string.IsNullOrEmpty(section))
+                return false;
+
+            for (int i = 0; i < _matches.Count; i++)
+            {
+                Match match = _matches[i];
+                if (!match.Groups[_groupSection].Success)
+                    continue;
+
+                Group group = match.Groups[_groupValue];
+                if (SubstringEquals(_content, group.Index, group.Length, section, _comparison))
+                {
+                    sectionName = group.Value;
+                    return true;
+                }
+            }
+
+            return false;
+        }
 
         // Method to retrieve all sections in the INI file.
         private IEnumerable<string> GetSections()
@@ -1431,14 +1535,17 @@ namespace System.Ini
             return keys;
         }
 
-        // Method to get a value from a specific section and key, with an optional default value.
-        private string GetValue(string section, string key, string defaultValue = null)
+        // Tries to get the name of the specified key as it appears in the file,
+        // preserving the original casing. Returns true if the key exists.
+        private bool TryGetKey(string section, string key, out string keyName)
         {
-            string value = defaultValue;
+            keyName = null;
+            if (key == null)
+                return false;
+
             bool emptySection = string.IsNullOrEmpty(section);
             bool inSection = emptySection;
 
-            // Search for the section and key, and return the corresponding value.
             for (int i = 0; i < _matches.Count; i++)
             {
                 Match match = _matches[i];
@@ -1454,19 +1561,111 @@ namespace System.Ini
 
                 if (inSection && match.Groups[_groupEntry].Success)
                 {
-                    Group group = match.Groups[_groupKey];
-                    if (!SubstringEquals(_content, group.Index, group.Length, key, _comparison))
-                        continue;
-
-                    value = match.Groups[_groupValue].Value;
-
-                    // If override mode is off, return the first match immediately.
-                    // Otherwise keep scanning...
-                    if (!_allowOverrides) return value;
+                    Group keyGroup = match.Groups[_groupKey];
+                    if (SubstringEquals(_content, keyGroup.Index, keyGroup.Length, key, _comparison))
+                    {
+                        keyName = keyGroup.Value;
+                        return true;
+                    }
                 }
             }
 
-            return value;
+            return false;
+        }
+
+        // Tries to get a value associated with the specified section and key.
+        // Returns true if the entry exists. When DuplicateKeyOverride is enabled,
+        // the last occurrence is returned; otherwise the first.
+        private bool TryGetValue(string section, string key, out string value)
+        {
+            value = null;
+            bool emptySection = string.IsNullOrEmpty(section);
+            bool inSection = emptySection;
+            bool found = false;
+
+            // Search for the section and key.
+            for (int i = 0; i < _matches.Count; i++)
+            {
+                Match match = _matches[i];
+
+                if (match.Groups[_groupSection].Success)
+                {
+                    Group group = match.Groups[_groupValue];
+                    inSection = SubstringEquals(_content, group.Index, group.Length, section, _comparison);
+
+                    if (emptySection) break;
+                    continue;
+                }
+
+                if (inSection && match.Groups[_groupEntry].Success)
+                {
+                    Group keyGroup = match.Groups[_groupKey];
+                    if (!SubstringEquals(_content, keyGroup.Index, keyGroup.Length, key, _comparison))
+                        continue;
+
+                    value = match.Groups[_groupValue].Value;
+                    if (_allowEscapeChars) value = UnEscape(value);
+
+                    found = true;
+
+                    // First match wins unless override mode is enabled.
+                    if (!_allowOverrides)
+                        return true;
+                }
+            }
+
+            return found;
+        }
+
+        // Method to get a value from a specific section and key, with an optional default value.
+        private string GetValue(string section, string key, string defaultValue = null)
+        {
+            return TryGetValue(section, key, out string value) ? value : defaultValue;
+        }
+
+        // Tries to get all values associated with the specified section and key.
+        // Returns true if at least one value is found. Preserves file order.
+        private bool TryGetValues(string section, string key, out string[] values)
+        {
+            values = null;
+            List<string> list = null;
+            bool emptySection = string.IsNullOrEmpty(section);
+            bool inSection = emptySection;
+
+            for (int i = 0; i < _matches.Count; i++)
+            {
+                Match match = _matches[i];
+
+                if (match.Groups[_groupSection].Success)
+                {
+                    Group group = match.Groups[_groupValue];
+                    inSection = SubstringEquals(_content, group.Index, group.Length, section, _comparison);
+
+                    if (emptySection) break;
+                    continue;
+                }
+
+                if (inSection && match.Groups[_groupEntry].Success)
+                {
+                    Group keyGroup = match.Groups[_groupKey];
+                    if (!SubstringEquals(_content, keyGroup.Index, keyGroup.Length, key, _comparison))
+                        continue;
+
+                    string value = match.Groups[_groupValue].Value;
+                    if (_allowEscapeChars) value = UnEscape(value);
+
+                    if (list == null)
+                        list = new List<string>(DefaultCapacity);
+
+                    list.Add(value);
+                }
+            }
+
+            if (list == null)
+                return false;
+
+            values = list.ToArray();
+            return true;
         }
 
         // Method to get all values in a specific section.
@@ -1877,6 +2076,185 @@ namespace System.Ini
                 index++;
             }
         }
+
+        // Advances the token index past a complete JSON value: a nested object,
+        // a nested array, or a primitive token.
+        private void SkipJsonValue(MatchCollection matches, ref int index)
+        {
+            if (index >= matches.Count)
+                return;
+
+            Match m = matches[index];
+
+            if (m.Groups["object_open"].Success || m.Groups["array_open"].Success)
+            {
+                SkipStructure(matches, ref index);
+                return;
+            }
+
+            // Primitive or unexpected token — advance by one.
+            index++;
+        }
+
+        // Returns the (start, length) span of the JSON value at the current token
+        // index in the original string, and advances the index past the value.
+        // Handles nested objects/arrays via SkipStructure.
+        private bool GetJsonValueSpan(
+            MatchCollection matches,
+            ref int index,
+            out int start,
+            out int length)
+        {
+            start = 0;
+            length = 0;
+
+            if (index >= matches.Count)
+                return false;
+
+            Match m = matches[index];
+
+            if (m.Groups["object_open"].Success || m.Groups["array_open"].Success)
+            {
+                int begin = m.Index;
+                SkipStructure(matches, ref index);
+                if (index <= 0)
+                    return false;
+
+                Match last = matches[index - 1];
+                start = begin;
+                length = last.Index + last.Length - begin;
+                return true;
+            }
+
+            if (m.Groups["value"].Success)
+            {
+                start = m.Index;
+                length = m.Length;
+                index++;
+                return true;
+            }
+
+            return false;
+        }
+
+        // Positions the token index at the value whose key matches targetKey
+        // inside the current JSON object. Returns false if the key is not found.
+        private bool DescendJsonObject(
+            MatchCollection matches,
+            ref int index,
+            string targetKey)
+        {
+            bool first = true;
+
+            while (true)
+            {
+                SkipWhitespaceAndComments(matches, ref index);
+                if (index >= matches.Count)
+                    return false;
+
+                Match m = matches[index];
+
+                if (m.Groups["object_close"].Success)
+                    return false;
+
+                if (!first)
+                {
+                    if (!m.Groups["array_sep"].Success)
+                        return false;
+
+                    index++;
+                    SkipWhitespaceAndComments(matches, ref index);
+                    if (index >= matches.Count)
+                        return false;
+
+                    m = matches[index];
+
+                    // Trailing comma before closing brace.
+                    if (m.Groups["object_close"].Success)
+                        return false;
+                }
+                first = false;
+
+                if (!m.Groups["key"].Success)
+                    return false;
+
+                // Strip surrounding quotes and unescape the key.
+                string rawKey = m.Groups["key"].Value;
+                string keyName = rawKey.Length >= 2
+                    ? UnEscape(rawKey.Substring(1, rawKey.Length - 2))
+                    : rawKey;
+
+                index++;
+
+                SkipWhitespaceAndComments(matches, ref index);
+                if (index >= matches.Count)
+                    return false;
+
+                m = matches[index];
+                if (!m.Groups["value_sep"].Success)
+                    return false;
+
+                index++;
+
+                SkipWhitespaceAndComments(matches, ref index);
+                if (index >= matches.Count)
+                    return false;
+
+                if (string.Equals(keyName, targetKey, _comparison))
+                    return true;
+
+                SkipJsonValue(matches, ref index);
+            }
+        }
+
+        // Positions the token index at the element with the given index inside
+        // the current JSON array. Supports decimal, hex, octal, and binary indices.
+        private bool DescendJsonArray(
+            MatchCollection matches,
+            ref int index,
+            int targetIndex)
+        {
+            int current = 0;
+            bool first = true;
+
+            while (true)
+            {
+                SkipWhitespaceAndComments(matches, ref index);
+                if (index >= matches.Count)
+                    return false;
+
+                Match m = matches[index];
+
+                if (m.Groups["array_close"].Success)
+                    return false;
+
+                if (!first)
+                {
+                    if (!m.Groups["array_sep"].Success)
+                        return false;
+
+                    index++;
+                    SkipWhitespaceAndComments(matches, ref index);
+                    if (index >= matches.Count)
+                        return false;
+
+                    m = matches[index];
+
+                    // Trailing comma before closing bracket.
+                    if (m.Groups["array_close"].Success)
+                        return false;
+                }
+                first = false;
+
+                if (current == targetIndex)
+                    return true;
+
+                SkipJsonValue(matches, ref index);
+                current++;
+            }
+        }
+
+
 
         // Parses the JSON value.
         private bool ParseValue(MatchCollection matches, ref int index, int depth, out object result)
@@ -2336,9 +2714,260 @@ namespace System.Ini
             sb.Append(']');
         }
 
+        // Navigates a JSON structure along the given path segments and retrieves
+        // the value at the end. Returns false if any segment cannot be resolved
+        // (missing key, index out of range, or a primitive encountered mid-path).
+        private bool TryNavigateJsonPath(object root, string[] segments, out object value)
+        {
+            value = null;
+            if (root == null || segments == null)
+                return false;
+
+            object current = root;
+            for (int i = 0; i < segments.Length; i++)
+            {
+                if (current == null)
+                    return false;
+
+                // JSON object → index by key.
+                if (current is IDictionary<string, object> dict)
+                {
+                    if (!dict.TryGetValue(segments[i], out object next))
+                        return false;
+                    current = next;
+                    continue;
+                }
+
+                // JSON array → index by integer (supports decimal, hex, octal, binary).
+                if (current is object[] array)
+                {
+                    object parsed = ParseNumber(segments[i], typeof(int), _culture);
+                    if (parsed == null)
+                        return false;
+
+                    int index = (int)parsed;
+                    if (index < 0 || index >= array.Length)
+                        return false;
+
+                    current = array[index];
+                    continue;
+                }
+
+                // Cannot descend into a primitive value.
+                return false;
+            }
+
+            value = current;
+            return true;
+        }
+
+        // Sets a value at the given path inside a JSON structure, creating intermediate
+        // dictionaries as needed. Returns false on failure (empty path, primitive
+        // encountered mid-path, missing array, or index out of range).
+        private bool TrySetJsonPathValue(object root, string[] segments, object value)
+        {
+            if (root == null || segments == null || segments.Length == 0)
+                return false;
+
+            object current = root;
+            int lastIndex = segments.Length - 1;
+
+            // Walk to the parent container, creating intermediate dictionaries as needed.
+            for (int i = 0; i < lastIndex; i++)
+            {
+                string segment = segments[i];
+
+                if (current is IDictionary<string, object> dict)
+                {
+                    if (!dict.TryGetValue(segment, out object next) || next == null)
+                    {
+                        next = new Dictionary<string, object>(DefaultCapacity, GetComparer(_comparison));
+                        dict[segment] = next;
+                    }
+                    current = next;
+                    continue;
+                }
+
+                if (current is object[] array)
+                {
+                    object parsed = ParseNumber(segment, typeof(int), _culture);
+                    if (parsed == null)
+                        return false;
+
+                    int index = (int)parsed;
+                    if (index < 0 || index >= array.Length)
+                        return false;
+
+                    object next = array[index];
+                    if (next == null)
+                    {
+                        next = new Dictionary<string, object>(DefaultCapacity, GetComparer(_comparison));
+                        array[index] = next;
+                    }
+                    current = next;
+                    continue;
+                }
+
+                return false;
+            }
+
+            // Set the value in the resulting container.
+            string last = segments[lastIndex];
+
+            if (current is IDictionary<string, object> targetDict)
+            {
+                targetDict[last] = value;
+                return true;
+            }
+
+            if (current is object[] targetArray)
+            {
+                object parsed = ParseNumber(last, typeof(int), _culture);
+                if (parsed == null)
+                    return false;
+
+                int index = (int)parsed;
+                if (index < 0 || index >= targetArray.Length)
+                    return false;
+
+                targetArray[index] = value;
+                return true;
+            }
+
+            return false;
+        }
+
+        // Navigates the JSON token stream along the given path segments and
+        // returns the raw span of the value at the end.
+        private bool TryNavigateJsonPathRaw(
+            MatchCollection matches,
+            string[] segments,
+            out int start,
+            out int length)
+        {
+            start = 0;
+            length = 0;
+
+            if (segments == null || segments.Length == 0)
+                return false;
+
+            int index = 0;
+            SkipWhitespaceAndComments(matches, ref index);
+            if (index >= matches.Count)
+                return false;
+
+            for (int s = 0; s < segments.Length; s++)
+            {
+                if (index >= matches.Count)
+                    return false;
+
+                Match m = matches[index];
+                string segment = segments[s];
+
+                if (m.Groups["object_open"].Success)
+                {
+                    index++;
+                    if (!DescendJsonObject(matches, ref index, segment))
+                        return false;
+                }
+                else if (m.Groups["array_open"].Success)
+                {
+                    object parsed = ParseNumber(segment, typeof(int), _culture);
+                    if (parsed == null)
+                        return false;
+
+                    int target = (int)parsed;
+                    if (target < 0)
+                        return false;
+
+                    index++;
+                    if (!DescendJsonArray(matches, ref index, target))
+                        return false;
+                }
+                else
+                {
+                    // A primitive with more segments to consume — cannot descend.
+                    return false;
+                }
+            }
+
+            return GetJsonValueSpan(matches, ref index, out start, out length);
+        }
+
         #endregion
 
         #region Internal utility and helper methods
+
+        // Watches an object implementing INotifyPropertyChanged and writes changed
+        // properties to the owning IniFile. Disposing unsubscribes from the event.
+        private sealed class SettingsWatcher : IDisposable
+        {
+            private readonly IniFile _ini;
+            private readonly INotifyPropertyChanged _obj;
+            private readonly Dictionary<string, PropertyInfo> _properties;
+            private bool _disposed;
+
+            public SettingsWatcher(IniFile ini, INotifyPropertyChanged obj)
+            {
+                _ini = ini;
+                _obj = obj;
+
+                // Build a map of property name → PropertyInfo, skipping properties
+                // that are not supposed to participate in serialization.
+                StringComparer comparer = GetComparer(ini._comparison);
+                PropertyInfo[] properties = obj.GetType().GetProperties(
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+
+                int propertiesLength = properties.Length;
+                _properties = new Dictionary<string, PropertyInfo>(propertiesLength, comparer);
+
+                for (int i = 0; i < propertiesLength; i++)
+                {
+                    PropertyInfo property = properties[i];
+
+                    // Skip write-only properties (their getter would throw).
+                    if (!property.CanRead)
+                        continue;
+
+                    // Skip properties marked with [IniIgnore].
+                    if (property.GetCustomAttributes(typeof(IniIgnoreAttribute), false).Length > 0)
+                        continue;
+
+                    _properties[property.Name] = property;
+                }
+
+                _obj.PropertyChanged += OnPropertyChanged;
+            }
+
+            private void OnPropertyChanged(object sender, PropertyChangedEventArgs e)
+            {
+                if (_disposed)
+                    return;
+
+                // An empty or null property name means "all properties changed" —
+                // a common convention (e.g. WPF, MVVM helpers).
+                if (string.IsNullOrEmpty(e.PropertyName))
+                {
+                    foreach (PropertyInfo property in _properties.Values)
+                        _ini.WriteProperty(property, _obj);
+
+                    return;
+                }
+
+                // Write only the property that has actually changed.
+                if (_properties.TryGetValue(e.PropertyName, out PropertyInfo changed))
+                    _ini.WriteProperty(changed, _obj);
+            }
+
+            public void Dispose()
+            {
+                if (_disposed)
+                    return;
+
+                _disposed = true;
+                _obj.PropertyChanged -= OnPropertyChanged;
+            }
+        }
 
         // Dynamic object wrapper that behaves similarly to ExpandoObject,
         // but allows custom handling of missing members and provides dictionary access.
@@ -3877,6 +4506,16 @@ namespace System.Ini
             return sb.ToString();
         }
 
+        // Splits path into its segments.
+        // Supports '/' and '\' as separators.
+        private static string[] GetPathSegments(string path)
+        {
+            if (string.IsNullOrEmpty(path))
+                return Array.Empty<string>();
+
+            return path.Split(_pathSeparatorChars, StringSplitOptions.RemoveEmptyEntries);
+        }
+
         // Compares a substring of the source string with the specified value
         // without allocating an intermediate string.
         private static bool SubstringEquals(string source, int index, int length, string value, StringComparison comparison)
@@ -4025,27 +4664,25 @@ namespace System.Ini
         /// <summary>
         /// Returns a simplified version of the INI file content containing only sections
         /// and key-value pairs, without comments, empty lines, and extra whitespace.
-        /// The resulting string uses '=' as the delimiter and normalizes spacing.
+        /// The resulting string uses the delimiter and line breaker configured for the
+        /// current instance (or auto-detected from the original content).
         /// Multiple values for the same key are preserved as separate lines.
         /// The order of sections and keys is preserved.
         /// </summary>
         /// <returns>A compacted INI string.</returns>
         public string Justify()
         {
+            // Nothing to normalize.
+            if (_matches.Count == 0)
+                return string.Empty;
+
             var sb = new StringBuilder();
 
-            // We'll process matches directly to preserve order and avoid extra allocations.
-            bool firstSection = true;
-            string currentSection = null;
-
-            // We need to collect global entries first, then sections.
-            // To keep order, we'll iterate twice: first collect global entries, then sections.
-            // Or we can build lists.
-            // Let's build a list of all entries with their section.
-
+            // We collect sections and entries in file order to preserve the original layout.
             var globalEntries = new List<KeyValuePair<string, string>>(DefaultCapacity);
             var sectionEntries = new Dictionary<string, List<KeyValuePair<string, string>>>(GetComparer(_comparison));
             var sectionOrder = new List<string>(DefaultCapacity);
+            string currentSection = null;
 
             for (int i = 0; i < _matches.Count; i++)
             {
@@ -4054,11 +4691,13 @@ namespace System.Ini
                 if (match.Groups[_groupSection].Success)
                 {
                     string section = match.Groups[_groupValue].Value;
+
                     if (!sectionEntries.ContainsKey(section))
                     {
                         sectionEntries[section] = new List<KeyValuePair<string, string>>(DefaultCapacity);
                         sectionOrder.Add(section);
                     }
+
                     currentSection = section;
                     continue;
                 }
@@ -4067,47 +4706,50 @@ namespace System.Ini
                 {
                     string key = match.Groups[_groupKey].Value;
                     string value = match.Groups[_groupValue].Value;
-                    //if (_allowMultiLine) value = UnWrap(value);
-                    //if (_allowEscapeChars) value = UnEscape(value);
 
-                    if (currentSection == null) // Global section.
+                    if (currentSection == null)
                     {
+                        // Global section — entries above the first named section.
                         globalEntries.Add(new KeyValuePair<string, string>(key, value));
                     }
-                    else
+                    else if (sectionEntries.TryGetValue(currentSection, out var list))
                     {
-                        if (sectionEntries.TryGetValue(currentSection, out var list))
-                            list.Add(new KeyValuePair<string, string>(key, value));
+                        list.Add(new KeyValuePair<string, string>(key, value));
                     }
                 }
             }
 
-            // Write global entries.
+            // Global entries first, if any.
             if (globalEntries.Count > 0)
             {
-                foreach (var kv in globalEntries)
-                    sb.AppendLine($"{kv.Key}={kv.Value}");
-                sb.AppendLine();
+                for (int i = 0; i < globalEntries.Count; i++)
+                {
+                    KeyValuePair<string, string> kv = globalEntries[i];
+                    sb.Append(kv.Key).Append(_defaultDelimiter).Append(kv.Value).Append(_lineBreaker);
+                }
+                sb.Append(_lineBreaker);
             }
 
-            // Write sections.
-            foreach (string section in sectionOrder)
+            // Then each section in file order.
+            for (int s = 0; s < sectionOrder.Count; s++)
             {
-                sb.AppendLine($"[{section}]");
-                var entries = sectionEntries[section];
-                foreach (var kv in entries)
-                    sb.AppendLine($"{kv.Key}={kv.Value}");
-                sb.AppendLine(); // blank line after each section
+                string section = sectionOrder[s];
+                sb.Append('[').Append(section).Append(']').Append(_lineBreaker);
+
+                List<KeyValuePair<string, string>> entries = sectionEntries[section];
+                for (int i = 0; i < entries.Count; i++)
+                {
+                    KeyValuePair<string, string> kv = entries[i];
+                    sb.Append(kv.Key).Append(_defaultDelimiter).Append(kv.Value).Append(_lineBreaker);
+                }
+
+                sb.Append(_lineBreaker); // blank line after each section
             }
 
-            // Remove trailing line breakers.
-            if (sb.Length > 0)
-            {
-                if (sb[sb.Length - 1] == '\n')
-                    sb.Length--;
-                if (sb.Length > 0 && sb[sb.Length - 1] == '\r')
-                    sb.Length--;
-            }
+            // Remove trailing line breakers (each loop iteration appends one, plus the
+            // separator between blocks). Trim down to a single clean end.
+            while (sb.Length > 0 && IsNewLine(sb[sb.Length - 1]))
+                sb.Length--;
 
             return sb.ToString();
         }
@@ -4135,6 +4777,49 @@ namespace System.Ini
         public string[] ReadKeys(string section = null)
         {
             return GetKeys(section).ToArray();
+        }
+
+        /// <summary>
+        /// Determines whether the INI file contains a section with the specified name.
+        /// </summary>
+        /// <param name="section">
+        /// The section name to look for. A <c>null</c> or empty value is not a valid
+        /// section name and always returns <c>false</c>.
+        /// </param>
+        /// <returns>
+        /// <c>true</c> if a section with the given name exists; otherwise <c>false</c>.
+        /// </returns>
+        /// <remarks>
+        /// Global entries (those located before the first named section) are not
+        /// considered a section, so <c>ContainsSection(null)</c> and
+        /// <c>ContainsSection(string.Empty)</c> always return <c>false</c>.
+        /// </remarks>
+        public bool ContainsSection(string section)
+        {
+            return TryGetSection(section, out _);
+        }
+
+        /// <summary>
+        /// Determines whether the INI file contains an entry with the specified key
+        /// in the given section.
+        /// </summary>
+        /// <param name="section">
+        /// Section name. Pass <c>null</c> or an empty string to search global entries
+        /// located above all named sections.
+        /// </param>
+        /// <param name="key">
+        /// The key name to look for. Cannot be <c>null</c>.
+        /// </param>
+        /// <returns>
+        /// <c>true</c> if an entry with the given key exists in the specified section;
+        /// otherwise <c>false</c>.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="key"/> is <c>null</c>.
+        /// </exception>
+        public bool ContainsKey(string section, string key)
+        {
+            return TryGetKey(section, key, out _);
         }
 
         /// <summary>
@@ -4263,6 +4948,64 @@ namespace System.Ini
                 throw new ArgumentNullException(nameof(key));
 
             return GetValue(section, key, defaultValue);
+        }
+
+        /// <summary>
+        /// Reads the raw JSON fragment located at the specified path inside the
+        /// JSON entry, preserving its original formatting (whitespace, comments,
+        /// line breaks).
+        /// </summary>
+        /// <param name="section">Section name. Pass <c>null</c> for global entries.</param>
+        /// <param name="key">Key name.</param>
+        /// <param name="path">
+        /// A slash- or backslash-separated path to the desired value inside the
+        /// JSON structure, e.g. <c>"root/nested/number"</c>. Array elements are
+        /// addressed by their numeric index, which may be written in decimal,
+        /// hexadecimal, octal, or binary notation (e.g. <c>"items/0x2/name"</c>).
+        /// </param>
+        /// <param name="defaultValue">
+        /// The value returned if the entry is missing, the JSON is invalid, or
+        /// the path cannot be resolved.
+        /// </param>
+        /// <returns>
+        /// The raw JSON fragment found at the specified path (with its original
+        /// formatting), or <paramref name="defaultValue"/> if not found.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="key"/> or <paramref name="path"/> is <c>null</c>.
+        /// </exception>
+        public string ReadJsonString(
+            string section,
+            string key,
+            string path,
+            string defaultValue = null)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+            if (path == null)
+                throw new ArgumentNullException(nameof(path));
+
+            string json = GetValue(section, key);
+            if (json == null)
+                return defaultValue;
+
+            try
+            {
+                string[] segments = GetPathSegments(path);
+                if (segments.Length == 0)
+                    return defaultValue;
+
+                MatchCollection matches = _jsonRegex.Matches(json);
+
+                if (!TryNavigateJsonPathRaw(matches, segments, out int start, out int length))
+                    return defaultValue;
+
+                return json.Substring(start, length);
+            }
+            catch
+            {
+                return defaultValue;
+            }
         }
 
         /// <summary>
@@ -4502,6 +5245,60 @@ namespace System.Ini
         }
 
         /// <summary>
+        /// Reads a value at the specified path inside the JSON entry and returns it
+        /// as a plain object. The returned object can be a primitive (string, bool,
+        /// double, null), an array (<c>object[]</c>), or a dictionary
+        /// (<see cref="IDictionary{TKey,TValue}"/> of <c>string</c> to <c>object</c>)
+        /// for JSON objects.
+        /// </summary>
+        /// <param name="section">Section name. Pass <c>null</c> for global entries.</param>
+        /// <param name="key">Key name.</param>
+        /// <param name="path">
+        /// A slash- or backslash-separated path to the desired value inside the JSON
+        /// structure, e.g. <c>"root/nested/number"</c>. Array elements are addressed
+        /// by their numeric index, which may be written in decimal, hexadecimal,
+        /// octal, or binary notation (e.g. <c>"items/0x2/name"</c>).
+        /// </param>
+        /// <param name="defaultValue">
+        /// The value returned if the entry is missing, the JSON is invalid, or the
+        /// path cannot be resolved.
+        /// </param>
+        /// <returns>
+        /// The value found at the specified path, or <paramref name="defaultValue"/>
+        /// if not found.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="key"/> or <paramref name="path"/> is <c>null</c>.
+        /// </exception>
+        public object ReadJsonObject(string section, string key, string path, object defaultValue = null)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+            if (path == null)
+                throw new ArgumentNullException(nameof(path));
+
+            string json = GetValue(section, key);
+            if (json == null)
+                return defaultValue;
+
+            try
+            {
+                object root = ParseJson(json);
+                if (root == null)
+                    return defaultValue;
+
+                if (TryNavigateJsonPath(root, GetPathSegments(path), out object value))
+                    return value ?? defaultValue;
+
+                return defaultValue;
+            }
+            catch
+            {
+                return defaultValue;
+            }
+        }
+
+        /// <summary>
         /// Reads a JSON value from the specified section and key, and returns it as an dynamic object.
         /// </summary>
         /// <param name="section">Section name. Pass <c>null</c> for global entries.</param>
@@ -4527,6 +5324,68 @@ namespace System.Ini
                 if (result is object[] arr)
                     return ConvertArray(arr);
                 return result;
+            }
+            catch
+            {
+                return defaultValue;
+            }
+        }
+
+        /// <summary>
+        /// Reads a value from a JSON entry at the specified path inside the JSON structure.
+        /// </summary>
+        /// <param name="section">Section name. Pass <c>null</c> for global entries.</param>
+        /// <param name="key">Key name.</param>
+        /// <param name="path">
+        /// A slash- or backslash-separated path to the desired value inside the JSON
+        /// structure, e.g. <c>"root/nested/number"</c>.
+        /// Array elements are addressed by their numeric index.
+        /// </param>
+        /// <param name="defaultValue">
+        /// The value returned if the entry is missing, the JSON is invalid,
+        /// or the path cannot be resolved.
+        /// </param>
+        /// <returns>
+        /// The value found at the specified path, or <paramref name="defaultValue"/>
+        /// if not found.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="key"/> or <paramref name="path"/> is <c>null</c>.
+        /// </exception>
+        public dynamic ReadJsonDynamicObject(
+            string section,
+            string key,
+            string path,
+            dynamic defaultValue = null)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+            if (path == null)
+                throw new ArgumentNullException(nameof(path));
+
+            string json = GetValue(section, key);
+            if (json == null)
+                return defaultValue;
+
+            try
+            {
+                object root = ParseJson(json);
+                if (root == null)
+                    return defaultValue;
+
+                if (!TryNavigateJsonPath(root, GetPathSegments(path), out object value))
+                    return defaultValue;
+
+                if (value == null)
+                    return defaultValue;
+
+                if (value is IDictionary<string, object> dict)
+                    return ConvertToExpando(dict);
+
+                if (value is object[] array)
+                    return ConvertArray(array);
+
+                return value;
             }
             catch
             {
@@ -5324,6 +6183,67 @@ namespace System.Ini
         #region Public write methods
 
         /// <summary>
+        /// Imports the contents of the specified dictionary into this INI file.
+        /// The dictionary format matches the one produced by
+        /// <see cref="ExportToDictionary"/>: section name → key → list of values.
+        /// </summary>
+        /// <param name="data">
+        /// The dictionary to import. An empty string as the outer key represents
+        /// global entries located above all named sections. A null value of the
+        /// inner dictionary is skipped. An empty list of values removes all
+        /// occurrences of the corresponding key.
+        /// </param>
+        /// <param name="replace">
+        /// When <c>false</c> (default), the data is merged into the existing content:
+        /// existing keys are overwritten in place, new keys and sections are appended.
+        /// When <c>true</c>, the current content is cleared first, and the imported
+        /// data becomes the entire file.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="data"/> is <c>null</c>.
+        /// </exception>
+        public void ImportFromDictionary(
+            IDictionary<string, Dictionary<string, List<string>>> data,
+            bool replace = false)
+        {
+            if (data == null)
+                throw new ArgumentNullException(nameof(data));
+
+            if (replace)
+                Content = string.Empty;
+
+            foreach (KeyValuePair<string, Dictionary<string, List<string>>> sectionPair in data)
+            {
+                // Empty string in ExportToDictionary means "global entries".
+                string section = string.IsNullOrEmpty(sectionPair.Key) ? null : sectionPair.Key;
+                Dictionary<string, List<string>> entries = sectionPair.Value;
+
+                if (entries == null)
+                    continue;
+
+                foreach (KeyValuePair<string, List<string>> entryPair in entries)
+                {
+                    string key = entryPair.Key;
+                    if (key == null)
+                        continue;
+
+                    List<string> values = entryPair.Value;
+
+                    if (values == null || values.Count == 0)
+                    {
+                        // Empty list — remove every occurrence of this key.
+                        RemoveKeys(section, key);
+                    }
+                    else
+                    {
+                        // Overwrite or append each value, preserving multi-value keys.
+                        WriteStrings(section, key, values.ToArray());
+                    }
+                }
+            }
+        }
+
+        /// <summary>
         /// Removes the first occurrence of the specified key in the given section from the INI file.
         /// </summary>
         /// <param name="section">
@@ -5608,6 +6528,77 @@ namespace System.Ini
         }
 
         /// <summary>
+        /// Writes a value at the specified path inside the JSON entry without
+        /// replacing the rest of the JSON structure. Missing intermediate objects
+        /// are created automatically. If the JSON entry does not exist or cannot
+        /// be parsed, a new JSON object is created starting at the given path.
+        /// </summary>
+        /// <param name="section">Section name. Pass <c>null</c> for global entries.</param>
+        /// <param name="key">Key name.</param>
+        /// <param name="path">
+        /// A slash- or backslash-separated path to the location where the value
+        /// should be stored, e.g. <c>"root/nested/number"</c>. Array elements are
+        /// addressed by their numeric index, which may be written in decimal,
+        /// hexadecimal, octal, or binary notation.
+        /// </param>
+        /// <param name="value">
+        /// The value to store. Can be a primitive, an array, a dictionary, or <c>null</c>.
+        /// </param>
+        /// <param name="beautify">
+        /// If <c>true</c>, formats the JSON with indentation.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="key"/> or <paramref name="path"/> is <c>null</c>.
+        /// </exception>
+        /// <remarks>
+        /// If the path cannot be resolved (for example, a primitive value is
+        /// encountered at an intermediate position, or an array index is out of
+        /// range), the method performs no change.
+        /// </remarks>
+        public void WriteJsonObject(
+            string section,
+            string key,
+            string path,
+            object value,
+            bool beautify = false)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+            if (path == null)
+                throw new ArgumentNullException(nameof(path));
+
+            string[] segments = GetPathSegments(path);
+            if (segments.Length == 0)
+                return;
+
+            // Read the existing JSON (if any) and parse it; on failure, start from
+            // an empty dictionary root.
+            string existing = GetValue(section, key);
+            object root = null;
+
+            if (existing != null)
+            {
+                try
+                {
+                    root = ParseJson(existing);
+                }
+                catch
+                {
+                    root = null;
+                }
+            }
+
+            if (root == null)
+                root = new Dictionary<string, object>(DefaultCapacity, GetComparer(_comparison));
+
+            if (!TrySetJsonPathValue(root, segments, value))
+                return;
+
+            string json = SerializeJson(root, beautify);
+            SetValue(section, key, json, false, false);
+        }
+
+        /// <summary>
         /// Writes a dynamic object as JSON to the specified section and key.
         /// The object can be any .NET object, ExpandoObject, or Dictionary.
         /// If <paramref name="value"/> is <c>null</c>, the entry is removed.
@@ -5633,6 +6624,43 @@ namespace System.Ini
             object obj = ConvertFromDynamic(value);
             string json = SerializeJson(obj, beautify);
             SetValue(section, key, json, false, false);
+        }
+
+        /// <summary>
+        /// Writes a dynamic object at the specified path inside the JSON entry
+        /// without replacing the rest of the JSON structure. Missing intermediate
+        /// objects are created automatically.
+        /// </summary>
+        /// <param name="section">Section name. Pass <c>null</c> for global entries.</param>
+        /// <param name="key">Key name.</param>
+        /// <param name="path">
+        /// A slash- or backslash-separated path to the location where the value
+        /// should be stored.
+        /// </param>
+        /// <param name="value">
+        /// The dynamic object to serialize. Can be an <c>ExpandoObject</c>,
+        /// a custom <c>DynamicObject</c>, a dictionary, an array, or a primitive.
+        /// </param>
+        /// <param name="beautify">
+        /// If <c>true</c>, formats the JSON with indentation.
+        /// </param>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="key"/> or <paramref name="path"/> is <c>null</c>.
+        /// </exception>
+        public void WriteJsonDynamicObject(
+            string section,
+            string key,
+            string path,
+            dynamic value,
+            bool beautify = false)
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+            if (path == null)
+                throw new ArgumentNullException(nameof(path));
+
+            object boxed = ConvertFromDynamic(value);
+            WriteJsonObject(section, key, path, boxed, beautify);
         }
 
         /// <summary>
@@ -5977,6 +7005,46 @@ namespace System.Ini
             {
                 WriteProperty(property, obj);
             }
+        }
+
+        /// <summary>
+        /// Subscribes to property change notifications of the specified object and writes
+        /// the changed property values to the INI file as they change.
+        /// </summary>
+        /// <param name="obj">
+        /// The object implementing <see cref="INotifyPropertyChanged"/> whose property
+        /// changes should be tracked.
+        /// </param>
+        /// <returns>
+        /// An <see cref="IDisposable"/> that unsubscribes from the notifications when disposed.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="obj"/> is <c>null</c>.
+        /// </exception>
+        /// <remarks>
+        /// <para>
+        /// Unlike <see cref="WriteSettings(object)"/>, this method does not write the
+        /// current property values immediately. Only subsequent changes are persisted.
+        /// To capture the initial state, call <see cref="WriteSettings(object)"/> before
+        /// calling <see cref="WatchSettings(INotifyPropertyChanged)"/>.
+        /// </para>
+        /// <para>
+        /// Properties marked with <see cref="IniIgnoreAttribute"/> are not tracked.
+        /// When <see cref="INotifyPropertyChanged.PropertyChanged"/> is raised with an
+        /// empty or <c>null</c> property name, all tracked properties are written.
+        /// </para>
+        /// <para>
+        /// The watcher does not synchronise access to the INI file. If the source object
+        /// raises <see cref="INotifyPropertyChanged.PropertyChanged"/> from multiple
+        /// threads, the caller is responsible for serialising the writes.
+        /// </para>
+        /// </remarks>
+        public IDisposable WatchSettings(INotifyPropertyChanged obj)
+        {
+            if (obj == null)
+                throw new ArgumentNullException(nameof(obj));
+
+            return new SettingsWatcher(this, obj);
         }
 
         /// <summary>
