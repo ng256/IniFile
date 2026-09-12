@@ -14,12 +14,17 @@
           - adding, updating, and removing keys and sections;
           - automatically mapping objects to and from INI files;
           - reading and writing multiline values enclosed in '{' and '}';
-          - reading and writing embedded JSON blocks as raw strings or 
-            dynamic objects;
+          - reading  and  writing  embedded  JSON  blocks  as raw strings  or 
+            dynamic objects (ExpandoObject, DynamicObject);
+          - expanding environment variables and pseudo-variables when reading
+            (e.g., %TEMP%, %RANDOM%, %DATE%, %TIME%, %CD%, %0..%9, %*);
+          - parsing  and formatting numbers  in decimal,  hexadecimal,  octal,
+            and binary notation using common prefixes and suffixes
+            (0x, 0b, 0o, &h, &o, 8#, %, $, #, h, b, o, etc.);
           - flexible interpretation of otherwise unrecognised text:
-            it can be treated as undefined,   as a key with an empty value
+            it can be treated as undefined, as  a  key  with  an  empty value
             (flags), or as a value with an empty key (continuation lines);
-          - controlling whether the first or last duplicate key value is
+          - controlling whether  the first  or  last duplicate  key value  is
             returned.
    
        All  modifications  preserve  the  original  formatting  of  the file,
@@ -31,7 +36,7 @@
        allowed delimiters,  comment characters,   handling of spaces in keys,
        undefined text mode, duplicate key override, and other parser options.
    
-       The class can load INI data from strings,  text readers,  streams,  or
+       The class can load INI data from strings,  text readers,  streams, or
        files, and can save the modified content back without reformatting.
    
    •   License:
@@ -52,9 +57,12 @@ using System.Reflection;
 using System.Diagnostics;
 using System.Collections;
 using System.Dynamic;
-using static System.Net.Mime.MediaTypeNames;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Runtime.CompilerServices;
 
-#nullable disable
+//#nullable disable
 
 namespace System.Ini
 {
@@ -207,6 +215,7 @@ namespace System.Ini
         /// </summary>
         [IniEntry("#undef_text")]
         public IniUndefinedTextMode UndefinedText { get; set; } = IniUndefinedTextMode.Ignore;
+
 
         /// <summary>
         /// Initializes a new instance with default settings.
@@ -615,6 +624,21 @@ namespace System.Ini
     #region INI serialization attributes
 
     /// <summary>
+    /// Indicates that the property value should be expanded when reading from an INI file.
+    /// When applied to a property, the <see cref="IniFile.ReadSettings"/> method will use
+    /// <see cref="IniFile.ReadExpandedString"/> instead of <see cref="IniFile.ReadString"/>,
+    /// so that environment variables and pseudo‑variables (e.g., %TEMP%, %RANDOM%, %DATE%)
+    /// are automatically replaced.
+    /// </summary>
+    /// <remarks>
+    /// This attribute only affects reading. Writing is unaffected – values are stored as provided.
+    /// </remarks>
+    [AttributeUsage(AttributeTargets.Property, AllowMultiple = false, Inherited = false)]
+    public sealed class IniExpandedAttribute : Attribute
+    {
+    }
+
+    /// <summary>
     /// Indicates that a property should be ignored by the INI serialization methods.
     /// </summary>
     [AttributeUsage(AttributeTargets.Property, AllowMultiple = false, Inherited = false)]
@@ -817,6 +841,9 @@ namespace System.Ini
         [NonSerialized]
         private readonly HashSet<string> _falseValues;
 
+        [NonSerialized] 
+        private static readonly char[] _enumSeparator;
+
         // Array containing the characters that are not allowed in path names.
         [NonSerialized]
         private static readonly char[] _invalidPathChars = Path.GetInvalidPathChars();
@@ -856,6 +883,11 @@ namespace System.Ini
 
         #region Constructors
 
+        static IniFile()
+        {
+            _enumSeparator = new[] { ',', '|' };
+        }
+
         // Private constructor to prevent direct instantiation.
         private IniFile()
         { }
@@ -888,6 +920,7 @@ namespace System.Ini
             _matches = new List<Match>(DefaultCapacity);
             _trueValues = new HashSet<string>(comparer) { "true", "yes", "on", "enable", "1" };
             _falseValues = new HashSet<string>(comparer) { "false", "no", "off", "disable", "0" };
+
 
             // Initialize parsing engine.
             _iniRegex = new Regex(iniPattern, regexOptions);
@@ -2320,16 +2353,8 @@ namespace System.Ini
             // to handle the missing member according to the default behavior.
             public override bool TryGetMember(GetMemberBinder binder, out object result)
             {
-                try
-                {
-                    return _values.TryGetValue(binder.Name, out result);
-                }
-                catch (Exception)
-                {
-                    result = null;
-                    return false;
-                }
-                
+                return _values.TryGetValue(binder.Name, out result)
+                       || (result = null) == null;
             }
 
             // Sets a dynamic property value by its name.
@@ -2457,6 +2482,7 @@ namespace System.Ini
             }
         }
 
+
         // Converts a dictionary representation of an object into a SafeExpandoObject.
         private static SafeExpandoObject ConvertToExpando(IDictionary<string, object> dict)
         {
@@ -2563,7 +2589,7 @@ namespace System.Ini
         private static RegexOptions GetRegexOptions(StringComparison comparison, RegexOptions options = RegexOptions.None)
         {
             // Bit 0 indicates IgnoreCase.
-            if ((((int)comparison) & 1) != 0)
+            if (((int)comparison & 1) != 0)
                 options |= RegexOptions.IgnoreCase;
             else
                 options &= ~RegexOptions.IgnoreCase;
@@ -2585,6 +2611,12 @@ namespace System.Ini
             }
 
             return options;
+        }
+
+        // Checks ignore case flag in the specified StringComparison.
+        private static bool IsIgnoreCase(StringComparison comparison)
+        {
+            return ((int)comparison & 1) != 0;
         }
 
         // Returns the StringComparer based on the specified StringComparison.
@@ -2663,37 +2695,516 @@ namespace System.Ini
 
         // Parses a string into an enum value of the specified type.
         // Supports comma-separated flags and ignores case unless specified.
-        private static object ParseEnum(string value, Type enumType, bool ignoreCase = true)
+        private static object ParseEnum(string value, Type enumType, bool ignoreCase = true, CultureInfo culture = null)
         {
-            if (string.IsNullOrEmpty(value) || enumType == null) return null;
+            if (string.IsNullOrWhiteSpace(value) || enumType == null)
+                return null;
 
-            // Split by commas, trim whitespace.
-            string[] parts = value.Split(new[] { ',', '|' }, StringSplitOptions.RemoveEmptyEntries);
-            long result = 0;
+            if (culture == null)
+                culture = CultureInfo.InvariantCulture;
+
+            Type underlyingType = Enum.GetUnderlyingType(enumType);
+            TypeCode typeCode = Type.GetTypeCode(underlyingType);
+
+            string[] parts = value.Split(_enumSeparator, StringSplitOptions.RemoveEmptyEntries);
+
+            ulong result = 0;
 
             foreach (string part in parts)
             {
                 string trimmed = part.Trim();
-                if (string.IsNullOrEmpty(trimmed))
+
+                if (trimmed.Length == 0)
                     continue;
 
-                // Try to parse by name first.
+                // Try to parse by enum name first.
                 try
                 {
                     object parsed = Enum.Parse(enumType, trimmed, ignoreCase);
-                    result |= Convert.ToInt64(parsed);
+
+                    switch (typeCode)
+                    {
+                        case TypeCode.SByte:
+                            result |= unchecked((ulong)(sbyte)parsed);
+                            break;
+
+                        case TypeCode.Byte:
+                            result |= (byte)parsed;
+                            break;
+
+                        case TypeCode.Int16:
+                            result |= unchecked((ulong)(short)parsed);
+                            break;
+
+                        case TypeCode.UInt16:
+                            result |= (ushort)parsed;
+                            break;
+
+                        case TypeCode.Int32:
+                            result |= unchecked((ulong)(int)parsed);
+                            break;
+
+                        case TypeCode.UInt32:
+                            result |= (uint)parsed;
+                            break;
+
+                        case TypeCode.Int64:
+                            result |= unchecked((ulong)(long)parsed);
+                            break;
+
+                        case TypeCode.UInt64:
+                            result |= (ulong)parsed;
+                            break;
+                    }
+
+                    continue;
                 }
-                catch (ArgumentException)
+                catch
                 {
-                    // If name parsing fails, try numeric parsing.
-                    if (long.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out long numeric))
-                        result |= numeric;
-                    else
-                        throw; // Re-throw if both fail.
+                    // Name parsing failed. Try numeric conversion below.
+                }
+
+                // Try numeric conversion using the common numeric parser.
+                object numeric = ParseNumber(trimmed, underlyingType, culture);
+
+                if (numeric == null)
+                    return null;
+
+                switch (typeCode)
+                {
+                    case TypeCode.SByte:
+                        result |= unchecked((ulong)(sbyte)numeric);
+                        break;
+
+                    case TypeCode.Byte:
+                        result |= (byte)numeric;
+                        break;
+
+                    case TypeCode.Int16:
+                        result |= unchecked((ulong)(short)numeric);
+                        break;
+
+                    case TypeCode.UInt16:
+                        result |= (ushort)numeric;
+                        break;
+
+                    case TypeCode.Int32:
+                        result |= unchecked((ulong)(int)numeric);
+                        break;
+
+                    case TypeCode.UInt32:
+                        result |= (uint)numeric;
+                        break;
+
+                    case TypeCode.Int64:
+                        result |= unchecked((ulong)(long)numeric);
+                        break;
+
+                    case TypeCode.UInt64:
+                        result |= (ulong)numeric;
+                        break;
+
+                    default:
+                        return null;
                 }
             }
 
-            return Enum.ToObject(enumType, result);
+            switch (typeCode)
+            {
+                case TypeCode.SByte:
+                    return Enum.ToObject(enumType, unchecked((sbyte)result));
+
+                case TypeCode.Byte:
+                    return Enum.ToObject(enumType, unchecked((byte)result));
+
+                case TypeCode.Int16:
+                    return Enum.ToObject(enumType, unchecked((short)result));
+
+                case TypeCode.UInt16:
+                    return Enum.ToObject(enumType, unchecked((ushort)result));
+
+                case TypeCode.Int32:
+                    return Enum.ToObject(enumType, unchecked((int)result));
+
+                case TypeCode.UInt32:
+                    return Enum.ToObject(enumType, unchecked((uint)result));
+
+                case TypeCode.Int64:
+                    return Enum.ToObject(enumType, unchecked((long)result));
+
+                case TypeCode.UInt64:
+                    return Enum.ToObject(enumType, result);
+
+                default:
+                    return null;
+            }
+        }
+
+        // Convert primitive values (usefull for default value attribute).
+        private static object ConvertPrimitive(object value, Type targetType, CultureInfo culture)
+        {
+            if (value == null || !targetType.IsPrimitive)
+                return null;
+
+            if (culture == null)
+                culture = CultureInfo.InvariantCulture;
+
+            try
+            {
+                return Convert.ChangeType(value, targetType, culture);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        // Custom parsing for decimal, hex, octal and binary numeric values.
+        private static object ParseNumber(string value, Type targetType, CultureInfo culture)
+        {
+            if (value == null)
+                return null;
+
+            if (culture == null)
+                culture = CultureInfo.InvariantCulture;
+
+            if (value.Length == 0)
+                return null;
+
+            int start;
+            int length;
+
+            // Trim whitespace.
+            for (start = 0; start < value.Length && char.IsWhiteSpace(value[start]); start++)
+                ;
+
+            int end = value.Length - 1;
+
+            for (; end >= start && char.IsWhiteSpace(value[end]); end--)
+                ;
+
+            if (start > end)
+                return null;
+
+            length = end - start + 1;
+
+            int radix = 10;
+
+            // Detect prefix.
+            if (length >= 2)
+            {
+                char first = value[start];
+                char second = value[start + 1];
+
+                if (first == '0')
+                {
+                    // Hex
+                    if (second == 'x' || second == 'X')
+                    {
+                        radix = 16;
+                        start += 2;
+                        length -= 2;
+                    }
+                    // Bin
+                    else if (second == 'b' || second == 'B')
+                    {
+                        radix = 2;
+                        start += 2;
+                        length -= 2;
+                    }
+                    // Oct
+                    else if (second == 'o' || second == 'O')
+                    {
+                        radix = 8;
+                        start += 2;
+                        length -= 2;
+                    }
+                }
+                else if (first == '&')
+                {
+                    // Hex
+                    if (second == 'h' || second == 'H')
+                    {
+                        radix = 16;
+                        start += 2;
+                        length -= 2;
+                    }
+                    // Oct
+                    else if (second == 'o' || second == 'O')
+                    {
+                        radix = 8;
+                        start += 2;
+                        length -= 2;
+                    }
+                    // Hex
+                    else
+                    {
+                        radix = 16;
+                        start++;
+                        length--;
+                    }
+                }
+                // Oct
+                else if (first == '8' && second == '#')
+                {
+                    radix = 8;
+                    start += 2;
+                    length -= 2;
+                }
+                // Bin
+                else if (first == '%')
+                {
+                    radix = 2;
+                    start++;
+                    length--;
+                }
+                // Hex
+                else if (first == '$' || first == '#')
+                {
+                    radix = 16;
+                    start++;
+                    length--;
+                }
+            }
+            // Bin
+            else if (length == 1 && value[start] == '%')
+            {
+                radix = 2;
+                start++;
+                length--;
+            }
+
+            // Detect suffix.
+            if (length > 0)
+            {
+                char last = value[start + length - 1];
+
+                // Hex
+                if (last == 'h' || last == 'H')
+                {
+                    radix = 16;
+                    length--;
+                }
+                // Bin
+                else if (last == 'b' || last == 'B')
+                {
+                    radix = 2;
+                    length--;
+                }
+                // Oct
+                else if (last == 'o' || last == 'O')
+                {
+                    radix = 8;
+                    length--;
+                }
+            }
+
+            if (length <= 0) // Should never be.
+                return null;
+
+            string number = value.Substring(start, length);
+            TypeCode typeCode = Type.GetTypeCode(targetType);
+
+            if (radix == 10)
+            {
+                switch (typeCode)
+                {
+                    case TypeCode.Byte
+                        when Byte.TryParse(number, NumberStyles.Integer, culture, out byte @byte):
+                        return @byte;
+
+                    case TypeCode.SByte
+                        when SByte.TryParse(number, NumberStyles.Integer, culture, out sbyte @sbyte):
+                        return @sbyte;
+
+                    case TypeCode.Int16
+                        when Int16.TryParse(number, NumberStyles.Integer, culture, out short int16):
+                        return int16;
+
+                    case TypeCode.UInt16
+                        when UInt16.TryParse(number, NumberStyles.Integer, culture, out ushort uint16):
+                        return uint16;
+
+                    case TypeCode.Int32
+                        when Int32.TryParse(number, NumberStyles.Integer, culture, out int int32):
+                        return int32;
+
+                    case TypeCode.UInt32
+                        when UInt32.TryParse(number, NumberStyles.Integer, culture, out uint uint32):
+                        return uint32;
+
+                    case TypeCode.Int64
+                        when Int64.TryParse(number, NumberStyles.Integer, culture, out long int64):
+                        return int64;
+
+                    case TypeCode.UInt64
+                        when UInt64.TryParse(number, NumberStyles.Integer, culture, out ulong uint64):
+                        return uint64;
+
+                    case TypeCode.Single
+                        when Single.TryParse(number, NumberStyles.Float, culture, out float single):
+                        return single;
+
+                    case TypeCode.Double
+                        when Double.TryParse(number, NumberStyles.Float, culture, out double @double):
+                        return @double;
+
+                    case TypeCode.Decimal
+                        when Decimal.TryParse(number, NumberStyles.Number, culture, out decimal decimalValue):
+                        return decimalValue;
+                }
+            }
+            else
+            {
+                /*System.Diagnostics.Debug.WriteLine(
+                    "value=[" + value + "] number=[" + number + "] radix=" + radix);*/
+
+                try
+                {
+                    switch (typeCode)
+                    {
+                        case TypeCode.Byte:
+                            return Convert.ToByte(number, radix);
+
+                        case TypeCode.SByte:
+                            return Convert.ToSByte(number, radix);
+
+                        case TypeCode.Int16:
+                            return Convert.ToInt16(number, radix);
+
+                        case TypeCode.UInt16:
+                            return Convert.ToUInt16(number, radix);
+
+                        case TypeCode.Int32:
+                            return Convert.ToInt32(number, radix);
+
+                        case TypeCode.UInt32:
+                            return Convert.ToUInt32(number, radix);
+
+                        case TypeCode.Int64:
+                            return Convert.ToInt64(number, radix);
+
+                        case TypeCode.UInt64:
+                            return Convert.ToUInt64(number, radix);
+                    }
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+
+            return null;
+        }
+
+        // Expands environment variables
+        private static string ExpandVariables(string input)
+        {
+            if (string.IsNullOrEmpty(input))
+                return input;
+
+            string cmdLine = Environment.CommandLine;
+            string[] cmdArgs = Environment.GetCommandLineArgs();
+            input = Environment.ExpandEnvironmentVariables(input);
+            var random = new Random();
+
+            // Path to EXE.
+            if (input.Contains("%0"))
+            {
+                string arg0 = cmdArgs.Length > 0 ? cmdArgs[0] : "";
+                input = input.Replace("%0", arg0);
+            }
+
+            // Command line arguments %1..%9
+            for (int i = 1; i <= 9; i++)
+            {
+                string varName = $"%" + i;
+                if (input.Contains(varName))
+                {
+                    string arg = i < cmdArgs.Length ? cmdArgs[i] : "";
+                    input = input.Replace(varName, arg);
+                }
+            }
+
+            // Command line.
+            if (input.Contains("%*"))
+            {
+                string allArgs = cmdArgs.Length > 1
+                    ? string.Join(" ", cmdArgs, 1, cmdArgs.Length - 1)
+                    : "";
+                input = input.Replace("%*", allArgs);
+            }
+
+            // Random integer.
+            if (input.Contains("%RANDOM%"))
+            {
+                uint randomValue = (uint)random.Next(int.MinValue, int.MaxValue);
+                input = input.Replace("%RANDOM%", randomValue.ToString());
+            }
+
+            // Current date.
+            if (input.Contains("%DATE%"))
+            {
+                string date = DateTime.Now.ToString("yyyyMMdd");
+                input = input.Replace("%DATE%", date);
+            }
+            
+            // Current time.
+            if (input.Contains("%TIME%"))
+            {
+                string time = DateTime.Now.ToString("HHmmss");
+                input = input.Replace("%TIME%", time);
+            }
+
+            // Current directory.
+            if (input.Contains("%CD%"))
+            {
+                string currentDir = Environment.CurrentDirectory;
+                input = input.Replace("%CD%", currentDir);
+            }
+
+            // Current directory (with slash).
+            if (input.Contains("%__CD__%"))
+            {
+                string currentDirWithSlash = Environment.CurrentDirectory;
+                if (!currentDirWithSlash.EndsWith(Path.DirectorySeparatorChar.ToString()))
+                    currentDirWithSlash += Path.DirectorySeparatorChar;
+                input = input.Replace("%__CD__%", currentDirWithSlash);
+            }
+
+            // Command line for this process.
+            if (input.Contains("%CMDCMDLINE%"))
+            {
+                input = input.Replace("%CMDCMDLINE%", cmdLine);
+            }
+
+            // Directory contains EXE file.
+            if (input.Contains("%__APPDIR__%"))
+            {
+                string appDir = AppDomain.CurrentDomain.BaseDirectory;
+                if (!appDir.EndsWith(Path.DirectorySeparatorChar.ToString()))
+                    appDir += Path.DirectorySeparatorChar;
+                input = input.Replace("%__APPDIR__%", appDir);
+            }
+
+            return input;
+        }
+
+        private static string NormalizePath(string path)
+        {
+            if (string.IsNullOrEmpty(path))
+                return path;
+
+            try
+            {
+                string expanded = ExpandVariables(path);
+                string fullPath = Path.GetFullPath(expanded);
+                return fullPath;
+            }
+            catch
+            {
+                return path;
+            }
         }
 
         // Converts escaped characters in the input string.
@@ -3656,6 +4167,88 @@ namespace System.Ini
         }
 
         /// <summary>
+        /// Reads a string associated with the specified section and key from the INI file
+        /// and expands environment variables (e.g., %RANDOM%, %DATE%, %CD%, %0%, etc.).
+        /// </summary>
+        /// <remarks>
+        /// <para>Supported pseudo‑variables (emulating CMD dynamic variables):</para>
+        /// <list type="table">
+        ///   <listheader>
+        ///     <term>Variable</term>
+        ///     <description>Replacement</description>
+        ///   </listheader>
+        ///   <item>
+        ///     <term><c>%RANDOM%</c></term>
+        ///     <description>Random 32‑bit unsigned integer (e.g., 1234567890)</description>
+        ///   </item>
+        ///   <item>
+        ///     <term><c>%DATE%</c></term>
+        ///     <description>Current date in <c>yyyyMMdd</c> format (e.g., 20260909)</description>
+        ///   </item>
+        ///   <item>
+        ///     <term><c>%TIME%</c></term>
+        ///     <description>Current time in <c>HHmmss</c> format (e.g., 143022)</description>
+        ///   </item>
+        ///   <item>
+        ///     <term><c>%CD%</c></term>
+        ///     <description>Current working directory (no trailing backslash)</description>
+        ///   </item>
+        ///   <item>
+        ///     <term><c>%__CD__%</c></term>
+        ///     <description>Current working directory with trailing backslash</description>
+        ///   </item>
+        ///   <item>
+        ///     <term><c>%CMDCMDLINE%</c></term>
+        ///     <description>Full command line of the current process</description>
+        ///   </item>
+        ///   <item>
+        ///     <term><c>%__APPDIR__%</c></term>
+        ///     <description>Directory of the executable file with trailing backslash</description>
+        ///   </item>
+        ///   <item>
+        ///     <term><c>%0</c></term>
+        ///     <description>Full path to the executable file (like <c>%0</c> in batch)</description>
+        ///   </item>
+        ///   <item>
+        ///     <term><c>%1</c> … <c>%9</c></term>
+        ///     <description>Command‑line arguments (missing arguments become empty string)</description>
+        ///   </item>
+        ///   <item>
+        ///     <term><c>%*</c></term>
+        ///     <description>All command‑line arguments (from <c>%1%</c> onward), joined with spaces</description>
+        ///   </item>
+        /// </list>
+        /// <para>Standard environment variables (e.g., <c>%TEMP%</c>, <c>%USERPROFILE%</c>) are expanded as well.</para>
+        /// <para>If expansion fails (e.g., invalid path), the original value is preserved.</para>
+        /// </remarks>
+        /// <param name="section">
+        /// Section name. Pass null to get global entries above all sections.
+        /// </param>
+        /// <param name="key">
+        /// Key name.
+        /// </param>
+        /// <param name="defaultValue">
+        /// The value to be returned if the specified entry is not found.
+        /// </param>
+        /// <returns>
+        /// The expanded string value. If the key is not found, <paramref name="defaultValue"/> is returned.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when parameter <paramref name="key"/> is null.
+        /// </exception>
+        public string ReadExpandedString(string section, string key, string defaultValue = "")
+        {
+            if (key == null)
+                throw new ArgumentNullException(nameof(key));
+
+            string value = GetValue(section, key, defaultValue);
+            value = ExpandVariables(value);
+            if (_allowEscapeChars) value = UnEscape(value);
+
+            return value;
+        }
+
+        /// <summary>
         /// Reads a JSON string associated with the specified section and key from the INI file
         /// without removing outer curly braces or wrapping/unwrapping multiline values.
         /// </summary>
@@ -3765,64 +4358,81 @@ namespace System.Ini
         {
             if (key == null)
                 throw new ArgumentNullException(nameof(key));
+
             if (type == null)
                 throw new ArgumentNullException(nameof(type));
-
-            // If no converter is provided, use the default converter for the specified type.
-            if (converter == null)
-                converter = TypeDescriptor.GetConverter(type);
 
             // Attempt to read the string value from the ini file for the given section and key.
             string value = ReadString(section, key, null);
 
+
             // If a value is found and can be converted from string, convert it and return.
             if (value != null)
             {
+                // Try JSON deserialize.
+                if (type == typeof(ExpandoObject) || type == typeof(DynamicObject))
+                    return ReadJsonDynamicObject(section, key, value ?? defaultValue);
+
+                bool empty = value.Length == 0;
+
                 // If the desired type is string, return the value directly.
                 if (type == typeof(string))
                     return value;
 
-                // If the desired type is boolean, try custom conversion for boolean.
+                // If the desired type is boolean, use the common numeric conversion.
                 if (type == typeof(bool))
                 {
                     // Flag mode.
-                    if (value == string.Empty)
+                    if (empty)
                         return true;
 
-                    // Try to parse as integer (decimal) with no hex specifier.
-                    if (int.TryParse(value, NumberStyles.Integer, _culture, out int number))
-                        return number != 0;
+                    // Try numeric conversion.
+                    object number = ParseNumber(value, typeof(int), _culture);
 
-                    // Try to parse as hex number (allow "0x" prefix manually).
-                    string hexValue = value.Trim();
-                    if (hexValue.StartsWith("0x") || hexValue.StartsWith("0X"))
-                        hexValue = hexValue.Substring(2);
-                    if (int.TryParse(hexValue, NumberStyles.HexNumber, _culture, out int hexNumber))
-                        return hexNumber != 0;
+                    if (number != null)
+                        return (int)number != 0;
 
+                    // Try named boolean values.
                     if (_trueValues.Contains(value))
-                    {
                         return true;
-                    }
+
                     if (_falseValues.Contains(value))
-                    {
                         return false;
-                    }
                 }
 
-                // If the type is an enumeration, try parsing the enum value.
-                if (type.IsEnum)
+                // First char.
+                else if (type == typeof(char) && !empty)
+                    return value[0];
+
+                // Primitive numeric types use the common extended numeric conversion.
+                else if (type.IsPrimitive)
+                {
+                    object result = ParseNumber(value, type, _culture);
+
+                    if (result != null)
+                        return result;
+                }
+
+                // Enumerations use names first, then the common numeric conversion.
+                else if (type.IsEnum)
                 {
                     try
                     {
-                        // Try to parse the value as an enum name or numeric value.
-                        return ParseEnum(value, type, ignoreCase: true);
+                        bool ignoreCase = IsIgnoreCase(_comparison);
+                        object result = ParseEnum(value, type, ignoreCase, _culture);
+
+                        if (result != null)
+                            return result;
                     }
                     catch
                     {
-                        // If parsing fails, the default value will be returned at the end of the method.
+                        // If parsing fails, continue with the regular converter.
                     }
                 }
+
+                // If no converter is provided, use the default converter for the specified type.
+                if (converter == null)
+                    converter = TypeDescriptor.GetConverter(type);
 
                 if (converter.CanConvertFrom(typeof(string)))
                 {
@@ -3832,25 +4442,34 @@ namespace System.Ini
                     }
                     catch
                     {
-                        // If fails process the default value.
+                        // If conversion fails, process the default value.
                     }
                 }
             }
 
-            // If a default value is provided and needs conversion, convert it to the desired type
-            if (defaultValue != null && defaultValue.GetType() != type && converter.CanConvertFrom(defaultValue.GetType()))
-                try
+            // If a default value is provided and needs conversion, convert it to the desired type.
+            if (defaultValue != null && defaultValue.GetType() != type)
+            {
+                if (converter == null)
+                    converter = TypeDescriptor.GetConverter(type);
+
+                if (converter.CanConvertFrom(defaultValue.GetType()))
                 {
-                    defaultValue = converter.ConvertFrom(null, _culture, defaultValue);
+                    try
+                    {
+                        defaultValue = converter.ConvertFrom(null, _culture, defaultValue);
+                    }
+                    catch
+                    {
+                        defaultValue = null;
+                    }
                 }
-                catch
-                {
-                    defaultValue = null; // If conversion fails return null.
-                }
+            }
 
             // Return the default value if the conversion is not possible.
             return defaultValue;
         }
+
 
         /// <summary>
         /// Reads a JSON value from the specified section and key, and returns it as an object.
@@ -3942,35 +4561,9 @@ namespace System.Ini
         /// </exception>
         public T Read<T>(string section, string key, T defaultValue = default, TypeConverter converter = null)
         {
-            if (key == null)
-                throw new ArgumentNullException(nameof(key));
-            if (converter == null)
-                converter = TypeDescriptor.GetConverter(typeof(T));
+            Type type = typeof(T);
 
-            if (typeof(T) == typeof(bool))
-                return (T)(object)ReadBoolean(section, key, (bool)(object)defaultValue);
-
-            if (typeof(T) == typeof(char))
-                return (T)(object)ReadChar(section, key, (char)(object)defaultValue);
-
-            // Attempt to read the string value from the INI file for the given section and key.
-            string value = ReadString(section, key, null);
-
-            // Attempt to directly cast the value to type T if it matches.
-            if (value is T t) return t;
-
-            // If the value is null or empty, return the provided default value.
-            if (string.IsNullOrEmpty(value)) return defaultValue;
-
-            // Convert the string value to the specified type T using the converter and return it.
-            try
-            {
-                return (T)converter.ConvertFromString(null, _culture, value);
-            }
-            catch
-            {
-                return defaultValue; // If conversion fails return the default value.
-            }
+            return (T) ReadObject(section, key, type, defaultValue, converter);
         }
 
         /// <summary>
@@ -4085,6 +4678,16 @@ namespace System.Ini
             // Determine the type of the property.
             Type propertyType = property.PropertyType;
 
+            if (propertyType == typeof(string))
+            {
+                bool expanded = property.GetCustomAttributes(typeof(IniExpandedAttribute)).Any();
+                string value = ReadString(section, key, defaultValue as string);
+                if(expanded) value = ExpandVariables(value);
+                property.SetValue(obj, value, null);
+
+                return;
+            }
+
             // Check if the property type is an array.
             if (propertyType.IsArray)
             {
@@ -4117,7 +4720,9 @@ namespace System.Ini
                     converter = TypeDescriptor.GetConverter(propertyType);
 
                 // Read a single object value from the INI file.
-                object value = ReadObject(section, key, propertyType, defaultValue, converter);
+                object value = property.IsDefined(typeof(DynamicAttribute), false) 
+                    ? ReadJsonDynamicObject(section, key, defaultValue) 
+                    : ReadObject(section, key, propertyType, defaultValue, converter);
 
                 // If the value is not null, set it to the property.
                 if (value != null)
@@ -4150,7 +4755,7 @@ namespace System.Ini
         /// <exception cref="ArgumentNullException">
         /// Thrown when the parameter <paramref name="property"/> is null.
         /// </exception>
-        public void ReadProperty(PropertyInfo property, object obj, object defaultValue = null, TypeConverter converter = null)
+        public void ReadProperty(PropertyInfo property, object obj, TypeConverter converter = null)
         {
             if (property == null)
                 throw new ArgumentNullException(nameof(property));
@@ -4162,9 +4767,19 @@ namespace System.Ini
             // Determine the section name for the INI file entry.
             // If no custom section is specified on the property, use the declaring type name as the default section name.
             Type declaringType = property.DeclaringType;
+
+
+            object defaultValue = property.GetCustomAttributes(typeof(DefaultValueAttribute), false).FirstOrDefault() is
+                DefaultValueAttribute defaultValueAttribute
+                ? defaultValueAttribute.Value
+                : null;
+
+            if (defaultValue != null && defaultValue.GetType() != declaringType && declaringType.IsPrimitive)
+                defaultValue = ConvertPrimitive(defaultValue, declaringType, _culture);
+
             string section = property.GetCustomAttributes(typeof(IniSectionAttribute), false)
-                                 .FirstOrDefault() is IniSectionAttribute propertySectionAttribute
-                                 && !propertySectionAttribute.IsDefaultAttribute()
+                                     .FirstOrDefault() is IniSectionAttribute propertySectionAttribute
+                             && !propertySectionAttribute.IsDefaultAttribute()
                                     ? propertySectionAttribute.Name
                                     : declaringType?.GetCustomAttributes(typeof(IniSectionAttribute), false)
                                     .FirstOrDefault() is IniSectionAttribute declaringTypeSectionAttribute
@@ -4235,20 +4850,20 @@ namespace System.Ini
             if (value == string.Empty)
                 return true;
 
-            // Try to parse as integer (decimal) with no hex specifier.
-            if (int.TryParse(value, NumberStyles.Integer, _culture, out int number))
-                return number != 0;
+            // Flag mode.
+            if (value.Length == 0)
+                return true;
 
-            // Try to parse as hex number (allow "0x" prefix manually).
-            string hexValue = value.Trim();
-            if (hexValue.StartsWith("0x") || hexValue.StartsWith("0X"))
-                hexValue = hexValue.Substring(2);
-            if (int.TryParse(hexValue, NumberStyles.HexNumber, _culture, out int hexNumber))
-                return hexNumber != 0;
+            // Try numeric conversion.
+            object number = ParseNumber(value, typeof(int), _culture);
 
-            // Try to parse by sets of true/false values.
+            if (number != null)
+                return (int)number != 0;
+
+            // Try named boolean values.
             if (_trueValues.Contains(value))
                 return true;
+
             if (_falseValues.Contains(value))
                 return false;
 
@@ -4930,9 +5545,21 @@ namespace System.Ini
                 if (value is string s)
                     str = s;
 
+                // Try JSON deserialize.
+                if (type == typeof(ExpandoObject) || type == typeof(DynamicObject))
+                {
+                    WriteJsonDynamicObject(section, key, value, true);
+                }
+
+
                 else if (value != null && value.GetType().IsEnum)
                 {
                     str = EnumToString(value);
+                }
+
+                else if (value is IConvertible conv)
+                {
+                    str = conv.ToString(_culture);
                 }
 
                 // Use the provided converter or get the default converter for the value type.
@@ -5030,9 +5657,6 @@ namespace System.Ini
         {
             if (key == null)
                 throw new ArgumentNullException(nameof(key));
-            if (converter == null)
-                converter = TypeDescriptor.GetConverter(typeof(T));
-
             WriteObject(section, key, value, converter);
         }
 
@@ -5169,6 +5793,8 @@ namespace System.Ini
 
             if (value is Array array)
                 WriteArray(section, key, array, converter);
+            else if (property.IsDefined(typeof(DynamicAttribute), false))
+                WriteJsonDynamicObject(section, key, value);
             else
                 WriteObject(section, key, value, converter);
         }
@@ -5282,11 +5908,7 @@ namespace System.Ini
             // Read settings for each property
             foreach (PropertyInfo property in properties)
             {
-                object defaultValue = property.GetCustomAttributes(typeof(DefaultValueAttribute), false).FirstOrDefault() is
-                    DefaultValueAttribute defaultValueAttribute
-                    ? defaultValueAttribute.Value
-                    : null;
-                ReadProperty(property, obj, defaultValue);
+                ReadProperty(property, obj);
             }
         }
 
