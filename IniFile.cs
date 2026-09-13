@@ -161,7 +161,7 @@ namespace System.Ini
         /// </summary>
         Value
     }
-    
+
     /***********************************************************************
       Parameters can be specified in the global section of the INI file.
       #comparison=Ordinal|OrdinalIgnoreCase|InvariantCulture|InvariantCultureIgnoreCase|CurrentCulture|CurrentCultureIgnoreCase
@@ -887,7 +887,7 @@ namespace System.Ini
         [NonSerialized]
         private readonly HashSet<string> _falseValues;
 
-            // Index of sections by name.Each key maps to one or more ranges in
+        // Index of sections by name.Each key maps to one or more ranges in
         // _matches: the position of the section header and the position just past
         // its last entry. Multiple ranges per name occur when a section is
         // declared more than once in the file.
@@ -910,7 +910,7 @@ namespace System.Ini
         private List<SectionRange> _lastSectionRanges;
 
         // Characters used to separate enum flag names in a string representation.
-        [NonSerialized] 
+        [NonSerialized]
         private static readonly char[] _enumSeparator = new[] { ',', '|' };
 
         // Array containing the characters that are not allowed in path names.
@@ -933,6 +933,37 @@ namespace System.Ini
 
         [NonSerialized]
         private const int MaxRegexBundles = 32;
+
+        // Cache of lists of public readable properties for serialization
+        // of arbitrary CLR objects (anonymous types, POCOs, etc.).
+        [NonSerialized]
+        private static readonly Dictionary<Type, PropertyInfo[]> _jsonPropertyCache =
+            new Dictionary<Type, PropertyInfo[]>();
+
+
+        // Property cache for ReadSettings / WriteSettings (static and instance
+        // are stored separately: the sets may differ due to BindingFlags).
+        [NonSerialized]
+        private static readonly Dictionary<Type, PropertyInfo[]> _iniStaticPropertyCache =
+            new Dictionary<Type, PropertyInfo[]>();
+
+        [NonSerialized]
+        private static readonly Dictionary<Type, PropertyInfo[]> _iniInstancePropertyCache =
+            new Dictionary<Type, PropertyInfo[]>();
+
+        [NonSerialized]
+        private static readonly Dictionary<Type, TypeConverter> _converterCache =
+            new Dictionary<Type, TypeConverter>();
+
+        private static readonly StringComparer[] _comparers =
+        {
+            StringComparer.CurrentCulture,                // 0: CurrentCulture
+            StringComparer.CurrentCultureIgnoreCase,      // 1: CurrentCultureIgnoreCase
+            StringComparer.InvariantCulture,              // 2: InvariantCulture
+            StringComparer.InvariantCultureIgnoreCase,    // 3: InvariantCultureIgnoreCase
+            StringComparer.Ordinal,                       // 4: Ordinal
+            StringComparer.OrdinalIgnoreCase,             // 5: OrdinalIgnoreCase
+        };
 
         #endregion
 
@@ -984,7 +1015,7 @@ namespace System.Ini
         private IniFile(string content, IniSettings settings)
         {
 
-            if(content == null)
+            if (content == null)
                 throw new ArgumentNullException(nameof(content));
 
             if (settings == null)
@@ -1052,11 +1083,11 @@ namespace System.Ini
         [Obsolete("This method is obsolete. Use the overload with IniSettings parameter instead. This method will be removed in a future version.")]
         private IniFile(string content,
             StringComparison comparison = StringComparison.InvariantCultureIgnoreCase,
-            bool allowEscChars = true, bool allowMultiLine = true) 
+            bool allowEscChars = true, bool allowMultiLine = true)
             : this(content, new IniSettings()
             {
-                Comparison = comparison, 
-                AllowEscapeChars = allowEscChars, 
+                Comparison = comparison,
+                AllowEscapeChars = allowEscChars,
                 AllowMultiLine = allowMultiLine
             })
         {
@@ -1185,8 +1216,8 @@ namespace System.Ini
                 throw new ArgumentNullException(nameof(fileName));
 
             string fullPath = GetFullPath(fileName);
-            string content = File.Exists(fullPath) 
-                ? File.ReadAllText(fullPath, encoding ?? AutoDetectEncoding(fullPath, Encoding.UTF8)) 
+            string content = File.Exists(fullPath)
+                ? File.ReadAllText(fullPath, encoding ?? AutoDetectEncoding(fullPath, Encoding.UTF8))
                 : string.Empty;
 
             return new IniFile(content, settings ?? IniSettings.Parse(content));
@@ -1206,8 +1237,8 @@ namespace System.Ini
                 throw new ArgumentNullException(nameof(fileName));
 
             string fullPath = GetFullPath(fileName);
-            string content = File.Exists(fullPath) 
-                ? File.ReadAllText(fullPath, AutoDetectEncoding(fullPath, Encoding.UTF8)) 
+            string content = File.Exists(fullPath)
+                ? File.ReadAllText(fullPath, AutoDetectEncoding(fullPath, Encoding.UTF8))
                 : string.Empty;
 
             return new IniFile(content, settings ?? IniSettings.Parse(content));
@@ -1645,6 +1676,16 @@ namespace System.Ini
             private readonly Dictionary<string, object> _values =
                 new Dictionary<string, object>();
 
+            public SafeExpandoObject()
+                : this(StringComparer.InvariantCultureIgnoreCase)
+            {
+            }
+
+            public SafeExpandoObject(StringComparer comparer)
+            {
+                _values = new Dictionary<string, object>(comparer ?? StringComparer.InvariantCultureIgnoreCase);
+            }
+
             // Gets a dynamic property value by its name.
             // Returns false when the property does not exist, causing the dynamic binder
             // to handle the missing member according to the default behavior.
@@ -2046,8 +2087,8 @@ namespace System.Ini
         {
             value = null;
             bool found = false;
-			
-			// Global entries: scan the region before the first named section.
+
+            // Global entries: scan the region before the first named section.
             if (string.IsNullOrEmpty(section))
             {
                 for (int i = 0; i < _firstSectionIndex; i++)
@@ -2056,12 +2097,12 @@ namespace System.Ini
                     if (!match.Groups[_iniEntry].Success)
                         continue;
 
-					Group keyGroup = match.Groups[_iniKey];
+                    Group keyGroup = match.Groups[_iniKey];
                     if (!SubstringEquals(_content, keyGroup.Index, keyGroup.Length, key, _comparison))
                         continue;
 
                     // Found key.
-					value = match.Groups[_iniValue].Value;
+                    value = match.Groups[_iniValue].Value;
                     found = true;
 
                     // First match wins unless override mode is enabled.
@@ -2070,9 +2111,9 @@ namespace System.Ini
                 }
                 return found;
             }
-			
-			 // Named section: use the precomputed ranges, one entry loop per occurrence.
-			if (!TryGetSectionRanges(section, out List<SectionRange> ranges))
+
+            // Named section: use the precomputed ranges, one entry loop per occurrence.
+            if (!TryGetSectionRanges(section, out List<SectionRange> ranges))
                 return false;
 
             for (int r = 0; r < ranges.Count; r++)
@@ -2089,7 +2130,7 @@ namespace System.Ini
                         continue;
 
                     // Found key.
-					value = match.Groups[_iniValue].Value;
+                    value = match.Groups[_iniValue].Value;
                     found = true;
 
                     if (!_allowOverrides)
@@ -2113,7 +2154,7 @@ namespace System.Ini
             values = null;
             List<string> list = null;
 
-			// Global entries: scan the region before the first named section.
+            // Global entries: scan the region before the first named section.
             if (string.IsNullOrEmpty(section))
             {
                 for (int i = 0; i < _firstSectionIndex; i++)
@@ -2127,14 +2168,14 @@ namespace System.Ini
                         continue;
 
                     // Found next key.
-					if (list == null)
+                    if (list == null)
                         list = new List<string>(DefaultCapacity);
 
                     list.Add(match.Groups[_iniValue].Value);
                 }
             }
-			
-			// Named section: use the precomputed ranges, one entry loop per occurrence.
+
+            // Named section: use the precomputed ranges, one entry loop per occurrence.
             else if (TryGetSectionRanges(section, out List<SectionRange> ranges))
             {
                 for (int r = 0; r < ranges.Count; r++)
@@ -2150,7 +2191,7 @@ namespace System.Ini
                         if (!SubstringEquals(_content, keyGroup.Index, keyGroup.Length, key, _comparison))
                             continue;
 
-						// Found next key.
+                        // Found next key.
                         if (list == null)
                             list = new List<string>(DefaultCapacity);
 
@@ -2563,7 +2604,7 @@ namespace System.Ini
                 Match m = matches[index];
 
                 // Skip comments, whitespace, newlines.
-                if(m.Groups[_jsonComment].Success
+                if (m.Groups[_jsonComment].Success
                     || m.Groups[_jsonWhitespace].Success
                     || m.Groups[_jsonNewline].Success)
                     continue;
@@ -3078,7 +3119,16 @@ namespace System.Ini
             if (type == typeof(string))
             {
                 string str = (string)value;
-                str = ToEscape(str);
+                if (_allowEscapeChars) str = ToEscape(str);
+                sb.Append('"').Append(str).Append('"');
+                return;
+            }
+
+            // Char.
+            if (type == typeof(char))
+            {
+                string str = value.ToString();
+                if (_allowEscapeChars) str = ToEscape(str);
                 sb.Append('"').Append(str).Append('"');
                 return;
             }
@@ -3090,34 +3140,209 @@ namespace System.Ini
                 return;
             }
 
-            // Numeric types.
-            if (type == typeof(int) || type == typeof(long) || type == typeof(short) ||
-                type == typeof(uint) || type == typeof(ulong) || type == typeof(ushort) ||
-                type == typeof(double) || type == typeof(float) || type == typeof(decimal))
+            // Guid / TimeSpan / Uri / Version — как строки.
+            if (type == typeof(Guid))
             {
-                string s = Convert.ToString(value, _culture);
-                sb.Append(s);
+                sb.Append('"').Append(((Guid)value).ToString("D")).Append('"');
                 return;
             }
 
-            // Object (IDictionary<string, object>).
+            if (type == typeof(TimeSpan))
+            {
+                sb.Append('"').Append(((TimeSpan)value).ToString("c", _culture)).Append('"');
+                return;
+            }
+
+            if (type == typeof(Uri))
+            {
+                string str = ((Uri)value).ToString();
+                if (_allowEscapeChars) str = ToEscape(str);
+                sb.Append('"').Append(str).Append('"');
+                return;
+            }
+
+            if (type == typeof(Version))
+            {
+                sb.Append('"').Append(value.ToString()).Append('"');
+                return;
+            }
+
+            // DateTime / DateTimeOffset — ISO 8601.
+            if (type == typeof(DateTime))
+            {
+                sb.Append('"').Append(((DateTime)value).ToString("o", _culture)).Append('"');
+                return;
+            }
+
+            if (type == typeof(DateTimeOffset))
+            {
+                sb.Append('"').Append(((DateTimeOffset)value).ToString("o", _culture)).Append('"');
+                return;
+            }
+
+            // Numeric types.
+            if (type == typeof(int) || type == typeof(long) || type == typeof(short) ||
+                type == typeof(uint) || type == typeof(ulong) || type == typeof(ushort) ||
+                type == typeof(byte) || type == typeof(sbyte) ||
+                type == typeof(double) || type == typeof(float) || type == typeof(decimal))
+            {
+                // JSON does not support NaN/Infinity — output null.
+                if (value is double d && (double.IsNaN(d) || double.IsInfinity(d)))
+                {
+                    sb.Append("null");
+                    return;
+                }
+                if (value is float f && (float.IsNaN(f) || float.IsInfinity(f)))
+                {
+                    sb.Append("null");
+                    return;
+                }
+
+                sb.Append(Convert.ToString(value, _culture));
+                return;
+            }
+
+            // Enums — as names (comma-separated for [Flags]).
+            if (type.IsEnum)
+            {
+                string str = EnumToString(value);
+                if (_allowEscapeChars) str = ToEscape(str);
+                sb.Append('"').Append(str).Append('"');
+                return;
+            }
+
+            // JSON object via a dictionary.
             if (value is IDictionary<string, object> dict)
             {
                 SerializeObject(dict, sb, beautify, depth + 1);
                 return;
             }
 
-            // Array or enumerable (except string).
+            // Non-generic IDictionary (Hashtable, SortedList, etc.).
+            if (value is IDictionary nonGenericDict)
+            {
+                SerializeNonGenericDictionary(nonGenericDict, sb, beautify, depth + 1);
+                return;
+            }
+
+            // Array / enumeration (except string).
             if (value is IEnumerable enumerable && !(value is string))
             {
                 SerializeArray(enumerable, sb, beautify, depth + 1);
                 return;
             }
 
-            // Fallback: ToString() with escaping.
-            string text = Convert.ToString(value, _culture);
-            text = ToEscape(text);
-            sb.Append('"').Append(text).Append('"');
+            // Everything else (anonymous types, POCOs) — via public properties.
+            SerializeComplexObject(value, type, sb, beautify, depth + 1);
+        }
+
+        // Returns (with caching) a list of the type's public readable properties. 
+        // Skips indexers, write-only properties, and [IniIgnore].
+        private static PropertyInfo[] GetJsonProperties(Type type)
+        {
+            lock (_jsonPropertyCache)
+            {
+                if (_jsonPropertyCache.TryGetValue(type, out PropertyInfo[] cached))
+                    return cached;
+
+                PropertyInfo[] all = type.GetProperties(BindingFlags.Instance | BindingFlags.Public);
+                var list = new List<PropertyInfo>(all.Length);
+
+                for (int i = 0; i < all.Length; i++)
+                {
+                    PropertyInfo p = all[i];
+                    if (!p.CanRead) continue;
+                    if (p.GetIndexParameters().Length > 0) continue;
+                    if (p.GetCustomAttributes(typeof(IniIgnoreAttribute), false).Length > 0) continue;
+                    list.Add(p);
+                }
+
+                PropertyInfo[] result = list.ToArray();
+                _jsonPropertyCache[type] = result;
+                return result;
+            }
+        }
+
+        // Serializes an arbitrary CLR object as a JSON object using its
+        // public readable properties. Used for anonymous types and POCOs.
+        private void SerializeComplexObject(
+            object value, Type type, StringBuilder sb, bool beautify, int depth)
+        {
+            if (depth >= MaxNestingDepth)
+            {
+                sb.Append("null");
+                return;
+            }
+
+            PropertyInfo[] props = GetJsonProperties(type);
+
+            sb.Append('{');
+
+            bool first = true;
+            for (int i = 0; i < props.Length; i++)
+            {
+                PropertyInfo prop = props[i];
+
+                object propValue;
+                try { propValue = prop.GetValue(value, null); }
+                catch { continue; }
+
+                if (!first) sb.Append(',');
+                if (beautify)
+                    sb.Append('\n').Append(' ', depth * 2);
+                else if (!first)
+                    sb.Append(' ');
+
+                first = false;
+
+                string name = prop.Name;
+                if (_allowEscapeChars) name = ToEscape(name);
+                sb.Append('"').Append(name).Append('"').Append(':');
+
+                SerializeValue(propValue, sb, beautify, depth + 1);
+            }
+
+            if (beautify && !first)
+                sb.Append('\n').Append(' ', (depth - 1) * 2);
+
+            sb.Append('}');
+        }
+
+        // Serializes a non-generic IDictionary as a JSON object. 
+        // Keys are converted to strings using Convert.ToString.
+        private void SerializeNonGenericDictionary(
+            IDictionary dict, StringBuilder sb, bool beautify, int depth)
+        {
+            if (depth >= MaxNestingDepth)
+            {
+                sb.Append("null");
+                return;
+            }
+
+            sb.Append('{');
+
+            bool first = true;
+            foreach (DictionaryEntry entry in dict)
+            {
+                if (!first) sb.Append(',');
+                if (beautify)
+                    sb.Append('\n').Append(' ', depth * 2);
+                else if (!first)
+                    sb.Append(' ');
+
+                first = false;
+
+                string key = Convert.ToString(entry.Key, _culture);
+                if (_allowEscapeChars) key = ToEscape(key);
+                sb.Append('"').Append(key).Append('"').Append(':');
+
+                SerializeValue(entry.Value, sb, beautify, depth + 1);
+            }
+
+            if (beautify && !first)
+                sb.Append('\n').Append(' ', (depth - 1) * 2);
+
+            sb.Append('}');
         }
 
         // Serializes a dictionary (object) to JSON format.
@@ -3282,8 +3507,8 @@ namespace System.Ini
             for (int i = 0; i < lastIndex; i++)
             {
                 string segment = segments[i];
-				
-				// Current node is dictionary.
+
+                // Current node is dictionary.
                 if (current is IDictionary<string, object> dict)
                 {
                     if (!dict.TryGetValue(segment, out object next) || next == null)
@@ -3294,8 +3519,8 @@ namespace System.Ini
                     current = next;
                     continue;
                 }
-				
-				// Current node is an array.
+
+                // Current node is an array.
                 if (current is object[] array)
                 {
                     object parsed = ParseNumber(segment, typeof(int), _culture);
@@ -3409,6 +3634,100 @@ namespace System.Ini
 
         #region Internal utility and helper methods
 
+        private static TypeConverter GetConverter(Type type)
+        {
+            if (type == null) return null;
+
+            lock (_converterCache)
+            {
+                if (_converterCache.TryGetValue(type, out TypeConverter cached))
+                    return cached;
+
+                TypeConverter converter;
+                try { converter = TypeDescriptor.GetConverter(type); }
+                catch { converter = null; }
+
+                _converterCache[type] = converter;
+                return converter;
+            }
+        }
+
+        private static bool HasCustomConverter(Type type)
+        {
+            TypeConverter c = GetConverter(type);
+            if (c == null) return false;
+
+            Type ct = c.GetType();
+            return ct != typeof(TypeConverter) && ct != typeof(ExpandableObjectConverter);
+        }
+
+        private static bool IsSimpleValue(Type type)
+        {
+            if (type.IsPrimitive) return true;
+
+            return type == typeof(string)
+                   || type == typeof(decimal)
+                   || type == typeof(DateTime)
+                   || type == typeof(DateTimeOffset)
+                   || type == typeof(TimeSpan)
+                   || type == typeof(Guid)
+                   || type == typeof(Uri)
+                   || type == typeof(Version);
+        }
+
+        private static int CountJsonChildren(object value)
+        {
+            if (value == null) return 0;
+
+            if (value is IDictionary<string, object> dict)
+                return dict.Count;
+
+            if (value is IDictionary nonGeneric)
+                return nonGeneric.Count;
+
+            // We deliberately skip arrays/lists: if it’s a list of two
+            // strings, it will fit on a single line anyway; if it’s long, the serializer
+            // will expand it vertically without our help. At the top level, "how many
+            // elements" is a poor criterion; let the content decide. 
+            // But if you really want to, you can count them: return enumerable.Cast<object>().Count();
+
+            Type type = value.GetType();
+            if (IsSimpleValue(type) || type.IsEnum) return 0;
+
+            // POCOs and anonymous types — based on the number of public readable properties.
+            return GetJsonProperties(type).Length;
+        }
+
+        private static PropertyInfo[] GetIniStaticProperties(Type type)
+        {
+            lock (_iniStaticPropertyCache)
+            {
+                if (_iniStaticPropertyCache.TryGetValue(type, out PropertyInfo[] cached))
+                    return cached;
+
+                PropertyInfo[] result = type.GetProperties(
+                    BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+
+                _iniStaticPropertyCache[type] = result;
+                return result;
+            }
+        }
+
+        private static PropertyInfo[] GetIniInstanceProperties(Type type)
+        {
+            lock (_iniInstancePropertyCache)
+            {
+                if (_iniInstancePropertyCache.TryGetValue(type, out PropertyInfo[] cached))
+                    return cached;
+
+                PropertyInfo[] result = type.GetProperties(
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+
+                _iniInstancePropertyCache[type] = result;
+                return result;
+            }
+        }
+
         // Builds a compact string signature for the settings that affect the
         // compiled patterns. Order and count must be kept in sync with the fields
         // of IniSettings used by BuildIniPatternEx / BuildJsonPattern and by
@@ -3462,22 +3781,19 @@ namespace System.Ini
 
 
         // Converts a dictionary representation of an object into a SafeExpandoObject.
-        private static SafeExpandoObject ConvertToExpando(IDictionary<string, object> dict)
+        private static SafeExpandoObject ConvertToExpando(
+            IDictionary<string, object> dict,
+            StringComparer comparer)
         {
-            var expando = new SafeExpandoObject();
+            var expando = new SafeExpandoObject(comparer);
             var expandoDict = (IDictionary<string, object>)expando;
 
             foreach (var kvp in dict)
             {
-                // Convert nested objects recursively.
                 if (kvp.Value is IDictionary<string, object> nestedDict)
-                    expandoDict[kvp.Key] = ConvertToExpando(nestedDict);
-
-                // Convert arrays that may contain nested dictionaries or arrays.
+                    expandoDict[kvp.Key] = ConvertToExpando(nestedDict, comparer);
                 else if (kvp.Value is object[] array)
-                    expandoDict[kvp.Key] = ConvertArray(array);
-
-                // Copy primitive values and other objects as-is.
+                    expandoDict[kvp.Key] = ConvertArray(array, comparer);
                 else
                     expandoDict[kvp.Key] = kvp.Value;
             }
@@ -3486,17 +3802,14 @@ namespace System.Ini
         }
 
         // Recursively converts nested objects and arrays inside an object array.
-        private static object[] ConvertArray(object[] array)
+        private static object[] ConvertArray(object[] array, StringComparer comparer)
         {
             for (int i = 0; i < array.Length; i++)
             {
-                // Convert nested objects inside the array.
                 if (array[i] is IDictionary<string, object> dict)
-                    array[i] = ConvertToExpando(dict);
-
-                // Convert nested arrays recursively.
+                    array[i] = ConvertToExpando(dict, comparer);
                 else if (array[i] is object[] nestedArray)
-                    array[i] = ConvertArray(nestedArray);
+                    array[i] = ConvertArray(nestedArray, comparer);
             }
 
             return array;
@@ -3598,7 +3911,7 @@ namespace System.Ini
         }
 
         // Returns the StringComparer based on the specified StringComparison.
-        private static StringComparer GetComparer(StringComparison comparison)
+        /*private static StringComparer GetComparer(StringComparison comparison)
         {
             switch (comparison)
             {
@@ -3617,6 +3930,13 @@ namespace System.Ini
                 default:
                     return StringComparer.InvariantCultureIgnoreCase;
             }
+        }*/
+        private static StringComparer GetComparer(StringComparison comparison)
+        {
+            int i = (int)comparison;
+            return (uint)i < (uint)_comparers.Length
+                ? _comparers[i]
+                : StringComparer.InvariantCultureIgnoreCase;
         }
 
         // Converts an enum value to its string representation.
@@ -4143,7 +4463,7 @@ namespace System.Ini
                 string date = DateTime.Now.ToString("yyyyMMdd");
                 input = input.Replace("%DATE%", date);
             }
-            
+
             // Current time.
             if (input.Contains("%TIME%"))
             {
@@ -5224,10 +5544,10 @@ namespace System.Ini
 
             string value = GetValue(section, key, defaultValue);
 
-            return expandVariables 
-                ? ExpandVariables(value) 
-                : _allowEscapeChars 
-                    ? UnEscape(value) 
+            return expandVariables
+                ? ExpandVariables(value)
+                : _allowEscapeChars
+                    ? UnEscape(value)
                     : value;
         }
 
@@ -5473,7 +5793,7 @@ namespace System.Ini
         /// <exception cref="ArgumentNullException">
         /// Thrown when <paramref name="key"/> is <c>null</c>.
         /// </exception>
-        public byte[] ReadBytes(string section, string key, IniByteEncoding encoding = IniByteEncoding.Hexadecimal, 
+        public byte[] ReadBytes(string section, string key, IniByteEncoding encoding = IniByteEncoding.Hexadecimal,
                                 params byte[] defaultValue)
         {
             if (key == null)
@@ -5640,7 +5960,7 @@ namespace System.Ini
 
                 // If no converter is provided, use the default converter for the specified type.
                 if (converter == null)
-                    converter = TypeDescriptor.GetConverter(type);
+                    converter = GetConverter(type);
 
                 if (converter.CanConvertFrom(typeof(string)))
                 {
@@ -5659,7 +5979,7 @@ namespace System.Ini
             if (defaultValue != null && defaultValue.GetType() != type)
             {
                 if (converter == null)
-                    converter = TypeDescriptor.GetConverter(type);
+                    converter = GetConverter(type);
 
                 if (converter.CanConvertFrom(defaultValue.GetType()))
                 {
@@ -5789,9 +6109,9 @@ namespace System.Ini
                 object result = ParseJson(json);
                 if (result == null) return defaultValue;
                 if (result is IDictionary<string, object> dict)
-                    return ConvertToExpando(dict);
+                    return ConvertToExpando(dict, GetComparer(_comparison));
                 if (result is object[] arr)
-                    return ConvertArray(arr);
+                    return ConvertArray(arr, GetComparer(_comparison));
                 return result;
             }
             catch
@@ -5849,10 +6169,10 @@ namespace System.Ini
                     return defaultValue;
 
                 if (value is IDictionary<string, object> dict)
-                    return ConvertToExpando(dict);
+                    return ConvertToExpando(dict, GetComparer(_comparison));
 
                 if (value is object[] array)
-                    return ConvertArray(array);
+                    return ConvertArray(array, GetComparer(_comparison));
 
                 return value;
             }
@@ -5891,7 +6211,7 @@ namespace System.Ini
         {
             Type type = typeof(T);
 
-            return (T) ReadObject(section, key, type, defaultValue, converter);
+            return (T)ReadObject(section, key, type, defaultValue, converter);
         }
 
         /// <summary>
@@ -5952,7 +6272,7 @@ namespace System.Ini
             {
                 string value = values[i];
                 // Use the provided converter or get the default converter for the element type.
-                TypeConverter tmpConv = converter ?? TypeDescriptor.GetConverter(elementType);
+                TypeConverter tmpConv = converter ?? GetConverter(elementType);
 
                 // Check if the conversion from string is possible and set the value in the array.
                 if (tmpConv.CanConvertFrom(typeof(string)))
@@ -6022,7 +6342,7 @@ namespace System.Ini
                 Type elementType = propertyType.GetElementType();
 
                 if (converter == null)
-                    converter = TypeDescriptor.GetConverter(elementType);
+                    converter = GetConverter(elementType);
 
                 // Read the array from the INI file
                 Array array = ReadArray(section, key, elementType, converter);
@@ -6044,11 +6364,11 @@ namespace System.Ini
             else
             {
                 if (converter == null)
-                    converter = TypeDescriptor.GetConverter(propertyType);
+                    converter = GetConverter(propertyType);
 
                 // Read a single object value from the INI file.
-                object value = property.IsDefined(typeof(DynamicAttribute), false) 
-                    ? ReadJsonDynamicObject(section, key, defaultValue) 
+                object value = property.IsDefined(typeof(DynamicAttribute), false)
+                    ? ReadJsonDynamicObject(section, key, defaultValue)
                     : ReadObject(section, key, propertyType, defaultValue, converter);
 
                 // If the value is not null, set it to the property.
@@ -7000,58 +7320,78 @@ namespace System.Ini
         /// </exception>
         public void WriteObject(string section, string key, object value, TypeConverter converter = null)
         {
-            // Check if the key is null and throw an exception if it is.
             if (key == null)
                 throw new ArgumentNullException(nameof(key));
 
-            // Initialize a string for the converted value
-            string str = null;
-
-            // If the value is not null, attempt to convert it to a string.
-            if (value != null)
+            if (value == null)
             {
-                // Get the type of the value.
-                Type type = value.GetType();
+                WriteString(section, key, null);
+                return;
+            }
 
-                if (value is string s)
-                    str = s;
+            Type type = value.GetType();
 
-                // Try JSON deserialize.
-                if (type == typeof(ExpandoObject) || type == typeof(DynamicObject))
+            // String.
+            if (value is string s)
+            {
+                WriteString(section, key, s);
+                return;
+            }
+
+            // ExpandoObject / DynamicObject — JSON.
+            if (type == typeof(ExpandoObject) || type == typeof(DynamicObject))
+            {
+                WriteJsonDynamicObject(section, key, value, true);
+                return;
+            }
+
+            // Enumeration - by name.
+            if (type.IsEnum)
+            {
+                WriteString(section, key, EnumToString(value));
+                return;
+            }
+
+            // 4. Simple scalars — in a single line.
+            if (IsSimpleValue(type))
+            {
+                if (value is IConvertible conv)
                 {
-                    WriteJsonDynamicObject(section, key, value, true);
+                    WriteString(section, key, conv.ToString(_culture));
+                    return;
                 }
 
-                // Parse enum.
-                else if (value != null && value.GetType().IsEnum)
-                {
-                    str = EnumToString(value);
-                }
-
-                // Convert primitive.
-                else if (value is IConvertible conv)
-                {
-                    str = conv.ToString(_culture);
-                }
-
-                // Use the provided converter or get the default converter for the value type.
-                else if ((converter ?? (converter = TypeDescriptor.GetConverter(type))).CanConvertTo(typeof(string)))
+                TypeConverter c = converter ?? TypeDescriptor.GetConverter(type);
+                if (c != null && c.CanConvertTo(typeof(string)))
                 {
                     try
                     {
-                        // Convert the value to a string.
-                        str = converter.ConvertToString(null, _culture, value);
-                    }
-                    catch
-                    {
-                        // If conversion fails, exit the method without writing.
+                        WriteString(section, key, c.ConvertToString(null, _culture, value));
                         return;
                     }
+                    catch { }
                 }
             }
 
-            // Write the converted string value to the INI file.
-            WriteString(section, key, str);
+            // An explicitly specified converter or a [TypeConverter] on the type —
+            // it takes precedence, except for TypeConverter / ExpandableObjectConverter,
+            // which signify "this is a complex object".
+            if (converter == null && HasCustomConverter(type))
+                converter = TypeDescriptor.GetConverter(type);
+
+            if (converter != null && converter.CanConvertTo(typeof(string)))
+            {
+                try
+                {
+                    WriteString(section, key, converter.ConvertToString(null, _culture, value));
+                    return;
+                }
+                catch { }
+            }
+
+            // All other objeccts is JSON.
+            bool beautify = CountJsonChildren(value) > 3;
+            WriteJsonObject(section, key, value, beautify);
         }
 
         /// <summary>
@@ -7288,7 +7628,7 @@ namespace System.Ini
 
             // Use the provided converter or get the default converter for the element type.
             if (converter == null)
-                converter = TypeDescriptor.GetConverter(elementType);
+                converter = GetConverter(elementType);
 
             // Get the length of the array
             int arrayLength = array.Length;
@@ -7436,7 +7776,7 @@ namespace System.Ini
                 throw new ArgumentNullException(nameof(type));
 
             // Retrieve all static properties of the given type
-            PropertyInfo[] properties = type.GetProperties(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            PropertyInfo[] properties = GetIniStaticProperties(type);
 
             // Read settings for each property
             foreach (PropertyInfo property in properties)
@@ -7483,7 +7823,7 @@ namespace System.Ini
             Type type = obj.GetType();
 
             // Retrieve all instance properties of the given object
-            PropertyInfo[] properties = type.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            PropertyInfo[] properties = GetIniInstanceProperties(type);
 
             // Read settings for each property
             foreach (PropertyInfo property in properties)
@@ -7503,7 +7843,7 @@ namespace System.Ini
                 throw new ArgumentNullException(nameof(type));
 
             // Retrieve all static properties of the given type
-            PropertyInfo[] properties = type.GetProperties(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            PropertyInfo[] properties = GetIniStaticProperties(type);
 
             // Write settings for each property
             foreach (PropertyInfo property in properties)
@@ -7550,7 +7890,7 @@ namespace System.Ini
             Type type = obj.GetType();
 
             // Retrieve all instance properties of the given object
-            PropertyInfo[] properties = type.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            PropertyInfo[] properties = GetIniInstanceProperties(type);
 
             // Write settings for each property
             foreach (PropertyInfo property in properties)
