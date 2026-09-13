@@ -87,7 +87,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
 
-#nullable disable
+//#nullable disable
 
 namespace System.Ini
 {
@@ -1895,7 +1895,7 @@ namespace System.Ini
             if (string.IsNullOrEmpty(section))
                 return false;
 
-            if (ReferenceEquals(section, _lastSectionName))
+            if (string.Equals(section, _lastSectionName, _comparison))
             {
                 ranges = _lastSectionRanges;
                 return ranges != null;
@@ -2257,7 +2257,7 @@ namespace System.Ini
         #region Internal data modification methods
 
         // Sets a single value for a specified key in a given section.
-        private void SetValue(string section, string key, string value = null, bool wrap = true, bool escape = true)
+        private void SetValue(string section, string key, string value = null)
         {
             bool emptySection = string.IsNullOrEmpty(section);
             bool expectedValue = !string.IsNullOrEmpty(value); // Indicates that a value should be inserted or updated.
@@ -2265,15 +2265,14 @@ namespace System.Ini
             Match lastMatch = null; // Keep track of the last match for future reference.
             StringBuilder sb = new StringBuilder(_content);
 
-            // Prepare the value for writing.
-            if (_allowEscapeChars && escape && expectedValue)
+            /*if (_allowEscapeChars && escape && expectedValue)
                 value = ToEscape(value);
             else
             {
                 string lineBreaker = _allowMultiLine ? _lineBreaker : " ";
                 value = NormalizeLineBreaker(value, lineBreaker);
-                if (_allowMultiLine && wrap) value = ToWrap(value);
-            }
+                if (_allowMultiLine && wrap) value = ToQuote(value);
+            }*/
 
             // Iterate over the content to find the section and key, and set the value.
             for (int i = 0; i < _matches.Count; i++)
@@ -2413,7 +2412,7 @@ namespace System.Ini
                             // Remove the old value and insert the new one.
                             sb.Remove(index, length);
 
-                            if (_allowEscapeChars)
+                            /*if (_allowEscapeChars)
                                 newValue = ToEscape(newValue);
                             else
                             {
@@ -2421,8 +2420,8 @@ namespace System.Ini
                                 newValue = NormalizeLineBreaker(newValue, lineBreaker);
 
                                 if (_allowMultiLine && wrap)
-                                    newValue = ToWrap(newValue);
-                            }
+                                    newValue = ToQuote(newValue);
+                            }*/
 
                             sb.Insert(index, newValue);
 
@@ -2484,7 +2483,7 @@ namespace System.Ini
                 {
                     string value = values[valueIndex++];
 
-                    if (_allowEscapeChars)
+                    /*if (_allowEscapeChars)
                         value = ToEscape(value);
                     else
                     {
@@ -2492,8 +2491,8 @@ namespace System.Ini
                         value = NormalizeLineBreaker(value, lineBreaker);
 
                         if (_allowMultiLine && wrap)
-                            value = ToWrap(value);
-                    }
+                            value = ToQuote(value);
+                    }*/
 
                     // Insert the new key-value pair into the content.
                     string line = $"{key}={value}";
@@ -3024,7 +3023,7 @@ namespace System.Ini
             if (match.Groups[_jsonString].Success)
             {
                 string value = match.Groups[_jsonString].Value;
-                if (_allowEscapeChars) value = UnEscape(value);
+                value = UnEscape(value);
                 result = value;
                 return true;
             }
@@ -3079,7 +3078,7 @@ namespace System.Ini
             if (type == typeof(string))
             {
                 string str = (string)value;
-                if (_allowEscapeChars) str = ToEscape(str);
+                str = ToEscape(str);
                 sb.Append('"').Append(str).Append('"');
                 return;
             }
@@ -3117,7 +3116,7 @@ namespace System.Ini
 
             // Fallback: ToString() with escaping.
             string text = Convert.ToString(value, _culture);
-            if (_allowEscapeChars) text = ToEscape(text);
+            text = ToEscape(text);
             sb.Append('"').Append(text).Append('"');
         }
 
@@ -3159,7 +3158,7 @@ namespace System.Ini
 
                 // Append a key.
                 string key = kvp.Key;
-                if (_allowEscapeChars) key = ToEscape(key);
+                key = ToEscape(key);
                 sb.Append('"').Append(key).Append('"').Append(':');
 
                 // Append a value.
@@ -3819,6 +3818,23 @@ namespace System.Ini
             }
         }
 
+        // Returns a new array with transform applied to each element.
+        // The source array is not modified.
+        private static T[] TransformArray<T>(T[] source, Func<T, T> transform)
+        {
+            if (source == null)
+                throw new ArgumentNullException(nameof(source));
+            if (transform == null)
+                throw new ArgumentNullException(nameof(transform));
+
+            int length = source.Length;
+            var result = new T[length];
+            for (int i = 0; i < length; i++)
+                result[i] = transform(source[i]);
+
+            return result;
+        }
+
         // Convert primitive values (usefull for default value attribute).
         private static object ConvertPrimitive(object value, Type targetType, CultureInfo culture)
         {
@@ -4342,13 +4358,13 @@ namespace System.Ini
             return (char)c;
         }
 
-        // // Removes the outer '{' and '}' from a wrapped value and trims spaces and tabs inside the braces.
-        private static string UnWrap(string value)
+        // Removes the outer quotes from a wrapped value and trims spaces and tabs inside the braces.
+        private static string UnQuote(string value)
         {
             if (value == null) return null;
 
             int length = value.Length;
-            if (length < 2 || value[0] != '{' || value[length - 1] != '}')
+            if (length < 2 || value[0] != '"' || value[length - 1] != '"')
                 return value;
 
             // trim whitespace characters.
@@ -4368,8 +4384,8 @@ namespace System.Ini
             return value.Substring(start, end - start + 1);
         }
 
-        // Wraps a multiline value in '{' and '}'.
-        private string ToWrap(string value)
+        // Wraps a multiline value in quotes'.
+        private string ToQuote(string value)
         {
             if (value == null) return null;
 
@@ -6161,10 +6177,6 @@ namespace System.Ini
             if (value == string.Empty)
                 return true;
 
-            // Flag mode.
-            if (value.Length == 0)
-                return true;
-
             // Try numeric conversion.
             object number = ParseNumber(value, typeof(int), _culture);
 
@@ -6839,6 +6851,10 @@ namespace System.Ini
             if (key == null)
                 throw new ArgumentNullException(nameof(key));
 
+            // Prepare the value for writing.
+            if (_allowEscapeChars)
+                value = ToEscape(value);
+
             SetValue(section, key, value);
         }
 
@@ -6855,7 +6871,7 @@ namespace System.Ini
             if (key == null)
                 throw new ArgumentNullException(nameof(key));
 
-            SetValue(section, key, value, false, false);
+            SetValue(section, key, value);
         }
 
         /// <summary>
@@ -6877,6 +6893,11 @@ namespace System.Ini
         {
             if (key == null)
                 throw new ArgumentNullException(nameof(key));
+
+            if (values == null)
+                throw new ArgumentNullException(nameof(values));
+
+            if (_allowEscapeChars) values = TransformArray(values, ToEscape);
 
             SetValues(section, key, wrap: true, values);
         }
@@ -7050,12 +7071,12 @@ namespace System.Ini
 
             if (value == null)
             {
-                SetValue(section, key, null, false);
+                SetValue(section, key, null);
                 return;
             }
 
             string json = SerializeJson(value, beautify);
-            SetValue(section, key, json, false, false);
+            SetValue(section, key, json);
         }
 
         /// <summary>
@@ -7126,7 +7147,7 @@ namespace System.Ini
                 return;
 
             string json = SerializeJson(root, beautify);
-            SetValue(section, key, json, false, false);
+            SetValue(section, key, json);
         }
 
         /// <summary>
@@ -7146,7 +7167,7 @@ namespace System.Ini
 
             if (value == null)
             {
-                SetValue(section, key, null, false, false);
+                SetValue(section, key, null);
                 return;
             }
 
@@ -7154,7 +7175,7 @@ namespace System.Ini
             // If it's ExpandoObject, we need to convert to Dictionary.
             object obj = ConvertFromDynamic(value);
             string json = SerializeJson(obj, beautify);
-            SetValue(section, key, json, false, false);
+            SetValue(section, key, json);
         }
 
         /// <summary>
